@@ -373,28 +373,10 @@ def main(args):
     with open(base_dir + 'dataset/train.json') as f:
         data = json.load(f)
 
-    # 이미지와 해당하는 카테고리 추출
-    image_annotations = {}
-    image_category_pairs = []
-
-
-    for ann in data['annotations']:
-        image_id = ann['image_id']
-        if image_id not in image_annotations:
-            image_annotations[image_id] = []
-        image_annotations[image_id].append(ann)
-
-    from collections import Counter
-    for image_id, anns in image_annotations.items():
-        # 각 이미지의 어노테이션에서 최빈값 카테고리를 대표 카테고리로 사용
-        category_counts = Counter([ann['category_id'] for ann in anns])
-        most_common_category_id = category_counts.most_common(1)[0][0]
-        image_category_pairs.append((image_id, most_common_category_id))
-
-    # StratifiedGroupKFold를 적용하기 위한 데이터 준비
-    X = np.ones((len(image_category_pairs), 1))  # 임의의 입력 데이터
-    y = np.array([pair[1] for pair in image_category_pairs])  # 카테고리
-    groups = np.array([pair[0] for pair in image_category_pairs])  # 이미지 ID
+    var = [(ann['image_id'], ann['category_id']) for ann in data['annotations']]
+    X = np.ones((len(data['annotations']),1))
+    y = np.array([v[1] for v in var])
+    groups = np.array([v[0] for v in var])
 
     # StratifiedGroupKFold 적용
     num_folds, random_state = 5, 7
