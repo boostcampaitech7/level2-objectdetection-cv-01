@@ -7,6 +7,7 @@
 
 import logging
 import os
+import datetime
 import time
 import copy
 import wandb
@@ -14,7 +15,7 @@ import weakref
 from collections import OrderedDict
 from typing import Any, Dict, List
 import pytorch_lightning as pl  # type: ignore
-from pytorch_lightning import LightningDataModule, LightningModule
+from pytorch_lightning import LightningDataModule
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 import torch 
@@ -35,7 +36,7 @@ from detectron2.engine import (
     default_writers,
     hooks,
 )
-from detectron2.evaluation import print_csv_format,COCOEvaluator
+from detectron2.evaluation import print_csv_format,COCOEvaluator, DatasetEvaluator
 from detectron2.evaluation.testing import flatten_results_dict
 from detectron2.modeling import build_model
 from detectron2.solver import build_lr_scheduler, build_optimizer
@@ -46,11 +47,9 @@ from detectron2.data import MetadataCatalog, DatasetCatalog
 from detectron2 import model_zoo
 import detectron2.data.transforms as T
 
-# from train_net import build_evaluator
 
 
-
-def build_evaluator(cls, cfg, dataset_name, output_folder=None):
+def build_evaluator(cfg, dataset_name, output_folder=None):
     if output_folder is None:
         os.makedirs('./output_eval', exist_ok = True)
         output_folder = './output_eval'
@@ -62,7 +61,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("detectron2")
 
 
-class TrainingModule(LightningModule):
+class TrainingModule(pl.LightningModule):
     def __init__(self, cfg):
         super().__init__()
         if not logger.isEnabledFor(logging.INFO):  # setup_logger is not called for d2
@@ -74,13 +73,11 @@ class TrainingModule(LightningModule):
         self.start_iter = 0
         self.max_iter = cfg.SOLVER.MAX_ITER
 
-        self.train_loss = []
         self.val_loss = []
 
         self.aug = T.ResizeShortestEdge(
             [cfg.INPUT.MIN_SIZE_TEST, cfg.INPUT.MIN_SIZE_TEST], cfg.INPUT.MAX_SIZE_TEST
         )
-
 
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         checkpoint["iteration"] = self.storage.iter
@@ -121,13 +118,20 @@ class TrainingModule(LightningModule):
             )
 
         loss_dict = self.model(batch)
-        total_loss = sum(loss_dict.values())
-        self.train_loss.append(total_loss.item())
-        if self.storage.iter % 20 == 0:
-            avg_train_loss = sum(self.train_loss) / len(self.train_loss) if self.train_loss else 0
-            wandb.log({"train_loss": avg_train_loss})
-
+        # total_loss = sum(loss_dict.values())
+        # self.train_loss.append(total_loss.item())
         SimpleTrainer.write_metrics(loss_dict, data_time,self.storage.iter) # ITER
+
+        # WandB에 iteration, total_loss, 개별 손실 기록
+        log_data = {
+            "iteration": self.storage.iter,
+            "total_loss": sum(loss_dict.values()).item()
+        }
+        # 개별 손실 추가
+        for loss_name, loss_value in loss_dict.items():
+            log_data[loss_name] = loss_value.item()
+        
+        wandb.log(log_data)
 
         opt = self.optimizers()
         self.storage.put_scalar(
@@ -150,6 +154,13 @@ class TrainingModule(LightningModule):
         return training_step_outpus
 
     def training_epoch_end(self, training_step_outputs):
+        # 에포크마다 손실, 학습률 등을 로깅
+        # avg_train_loss = sum(self.train_loss) / len(self.train_loss) if self.train_loss else 0
+        # wandb.log({"train_loss": avg_train_loss})
+                
+        # 저장한 학습 손실 목록 초기화
+        # self.train_loss = []
+
         self.iteration_timer.after_train()
         if comm.is_main_process():
             self.checkpointer.save("model_final")
@@ -160,7 +171,7 @@ class TrainingModule(LightningModule):
 
     def _process_dataset_evaluation_results(self) -> OrderedDict:
         results = OrderedDict()
-        for idx, dataset_name in enumerate(self.cfg.DATASETS.TEST):
+        for idx, dataset_name in enumerate(self.cfg.FOLD_VAL_NAME):
             results[dataset_name] = self._evaluators[idx].evaluate()
             if comm.is_main_process():
                 print_csv_format(results[dataset_name])
@@ -171,31 +182,41 @@ class TrainingModule(LightningModule):
 
     def _reset_dataset_evaluators(self):
         self._evaluators = []
-        for dataset_name in self.cfg.DATASETS.TEST:
+        for dataset_name in self.cfg.FOLD_VAL_NAME:
             evaluator = build_evaluator(self.cfg, dataset_name)
             evaluator.reset()
             self._evaluators.append(evaluator)
 
-    def on_validation_epoch_start(self, _outputs):
+    def on_validation_epoch_start(self):
         self._reset_dataset_evaluators()
 
     def validation_epoch_end(self, _outputs):
-        results = self._process_dataset_evaluation_results(_outputs)
+        results = self._process_dataset_evaluation_results()
 
         flattened_results = flatten_results_dict(results)
+
+        # Validation 손실 평균 계산 및 로깅
+        # avg_val_loss = sum(self.val_loss) / len(self.val_loss) if self.val_loss else 0
+        # wandb.log({"avg_val_loss": avg_val_loss})
+
+        # Validation 손실 초기화
+        self.val_loss = []
 
         # Extract mAP, mAP50, and mAP75 and store them in instance variables
         if 'bbox/AP' in flattened_results:
             self.mAP = flattened_results['bbox/AP']
+            self.log('mAP', self.mAP)  # Log for EarlyStopping and Checkpointing
         if 'bbox/AP50' in flattened_results:
             self.mAP50 = flattened_results['bbox/AP50']
+            self.log('mAP50', self.mAP50)  # Log for EarlyStopping and Checkpointing
         if 'bbox/AP75' in flattened_results:
             self.mAP75 = flattened_results['bbox/AP75']
+            self.log('mAP75', self.mAP75)  # Log for EarlyStopping and Checkpointing
 
         # avg_val_loss 계산 및 Wandb에 즉시 로그 기록
-        avg_val_loss = sum(self.val_loss) / len(self.val_loss) if self.val_loss else 0
+        # avg_val_loss = sum(self.val_loss) / len(self.val_loss) if self.val_loss else 0
         wandb.log({
-            "avg_val_loss": avg_val_loss,
+            # "avg_val_loss": avg_val_loss,
             "mAP": self.mAP,
             "mAP50": self.mAP50,
             "mAP75": self.mAP75,
@@ -215,63 +236,95 @@ class TrainingModule(LightningModule):
 
     def validation_step(self, batch, batch_idx: int, dataloader_idx: int = 0) -> None:
         if not isinstance(batch, List):
-            batch = [batch]
+            batch = [batch] 
+
+         # 이미지 데이터를 torch.Tensor로 변환하고, 채널 순서 변경 (HWC -> CHW)
+        # for x in batch:
+            # x['image'] = torch.from_numpy(x['image'].astype('float32')).permute(2, 0, 1)
+
         outputs = self.model(batch)
         self._evaluators[dataloader_idx].process(batch, outputs)
-
-        # Assuming we can compute validation loss here (modify as needed)
-        val_loss = sum([output["loss"].item() for output in outputs])
-        self.val_loss.append(val_loss)
+        
     
     def on_predict_epoch_start(self):
         # return super().on_predict_epoch_start()
         self.model.eval()
 
-    def predict_step(self, batch, batch_idx):
+    # def predict_step(self, batch, batch_idx):
 
-        # test dataloder의 batch_size는 1
-        # TODO : batch size 변경 
-        prediction_string = ''
-        data = batch
-        data = data[0]
-        data_file_name,data = data['file_name'],data['image']
-        height, width = data.shape[:2]
+    #     # test dataloder의 batch_size는 1
+    #     # TODO : batch size 변경 
+    #     prediction_string = ''
+    #     data = batch
+    #     data = data[0]
+    #     data_file_name,data = data['file_name'],data['image']
+    #     height, width = data.shape[:2]
         
-        #TODO? 
-        # if self.input_format == "RGB":
-        #     # whether the model expects BGR inputs or RGB
-        #     original_image = original_image[:, :, ::-1]
+    #     #TODO? 
+    #     # if self.input_format == "RGB":
+    #     #     # whether the model expects BGR inputs or RGB
+    #     #     original_image = original_image[:, :, ::-1]
 
 
-        data = self.aug.get_transform(data).apply_image(data)
-        data = torch.as_tensor(data.astype("float32").transpose(2, 0, 1))
-        data.to(self.cfg.MODEL.DEVICE)
+    #     data = self.aug.get_transform(data).apply_image(data)
+    #     data = torch.as_tensor(data.astype("float32").transpose(2, 0, 1))
+    #     data.to(self.cfg.MODEL.DEVICE)
 
-        inputs = {"image": data, "height": height, "width": width}
+    #     inputs = {"image": data, "height": height, "width": width}
 
-        outputs = self.model([inputs])[0]['instances'] #==self.model at eval  
+    #     outputs = self.model([inputs])[0]['instances'] #==self.model at eval  
 
-        targets = outputs.pred_classes.cpu().tolist()
-        boxes = [i.cpu().detach().numpy() for i in outputs.pred_boxes]
-        scores = outputs.scores.cpu().tolist()
+    #     targets = outputs.pred_classes.cpu().tolist()
+    #     boxes = [i.cpu().detach().numpy() for i in outputs.pred_boxes]
+    #     scores = outputs.scores.cpu().tolist()
 
-        for target, box, score in zip(targets,boxes,scores):
-            prediction_string += (str(target) + ' ' + str(score) + ' ' + str(box[0]) + ' ' 
-            + str(box[1]) + ' ' + str(box[2]) + ' ' + str(box[3]) + ' ')
+    #     for target, box, score in zip(targets,boxes,scores):
+    #         prediction_string += (str(target) + ' ' + str(score) + ' ' + str(box[0]) + ' ' 
+    #         + str(box[1]) + ' ' + str(box[2]) + ' ' + str(box[3]) + ' ')
 
-        return prediction_string, data_file_name
+    #     return prediction_string, data_file_name
+    
+    def predict_step(self, batch, batch_idx):
+        prediction_results = []
+    
+        for data in batch:
+            prediction_string = ''
+            data_file_name, data_image = data['file_name'], data['image']
+            height, width = data_image.shape[:2]
+
+            # 이미지 변환
+            data_image = self.aug.get_transform(data_image).apply_image(data_image)
+            data_image = torch.as_tensor(data_image.astype("float32").transpose(2, 0, 1))
+            data_image = data_image.to(self.cfg.MODEL.DEVICE)
+
+            inputs = {"image": data_image, "height": height, "width": width}
+            outputs = self.model([inputs])[0]['instances']  # 예측
+
+            # 예측 결과 추출
+            targets = outputs.pred_classes.cpu().tolist()
+            boxes = [i.cpu().detach().numpy() for i in outputs.pred_boxes]
+            scores = outputs.scores.cpu().tolist()
+
+            # 예측 문자열 생성
+            for target, box, score in zip(targets, boxes, scores):
+                prediction_string += (f"{target} {score} {box[0]} {box[1]} {box[2]} {box[3]} ")
+
+            # 결과 저장
+            prediction_results.append((prediction_string, data_file_name))
+    
+        return prediction_results
 
 
     def configure_optimizers(self):
         optimizer = build_optimizer(self.cfg, self.model)
         self._best_param_group_id = hooks.LRScheduler.get_best_param_group_id(optimizer)
         scheduler = build_lr_scheduler(self.cfg, optimizer)
-        return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+
 
     def lr_scheduler_step(self, scheduler, optimizer_idx, metric):
-        # Manually step the scheduler
-        scheduler.step(self.current_epoch) 
-
+        # 사용자 정의 스케줄러를 수동으로 업데이트합니다.
+        scheduler.step()
 
 ##### Mapper 
 def TrainMapper(dataset_dict):
@@ -304,7 +357,7 @@ def ValMapper(dataset_dict):
     dataset_dict = copy.deepcopy(dataset_dict)
     image = detection_utils.read_image(dataset_dict['file_name'], format='BGR')
     
-    dataset_dict['image'] = image
+    dataset_dict['image'] = torch.as_tensor(image.transpose(2,0,1).astype('float32')) # (H,W,C) -> (C,H,W)
     
     return dataset_dict
 
@@ -331,9 +384,10 @@ class DataModule(LightningDataModule):
         return build_detection_train_loader(self.cfg,mapper = TrainMapper,sampler=self.sampler)
 
     def val_dataloader(self):
-        dataloaders = []
-        for dataset_name in self.cfg.DATASETS.TEST: #TODO?
-            dataloaders.append(build_detection_test_loader(self.cfg, dataset_name,ValMapper))
+        # dataloaders = []
+        # for dataset_name in self.cfg.DATASETS.TEST: #TODO?
+            # dataloaders.append(build_detection_test_loader(self.cfg, dataset_name,ValMapper))
+        dataloaders = [build_detection_test_loader(self.cfg,fold_val_name,ValMapper)]
         return dataloaders
     
     def predict_dataloader(self):
@@ -391,14 +445,16 @@ def main(args):
         val_dataset = [item for item in original_dataset if item['image_id'] in val_image_ids]
 
         # Fold별로 데이터셋 등록
-        fold_train_name = f'coco_trash_train_fold_{fold+1}'
+        global fold_train_name
+        fold_train_name= f'coco_trash_train_fold_{fold+1}'
+        global fold_val_name 
         fold_val_name = f'coco_trash_val_fold_{fold+1}'
 
         # 기존에 동일한 이름으로 등록된 데이터셋이 있다면 삭제
-        if fold_train_name in DatasetCatalog:
-            DatasetCatalog.remove(fold_train_name)
-        if fold_val_name in DatasetCatalog:
-            DatasetCatalog.remove(fold_val_name)    
+        # if fold_train_name in DatasetCatalog:
+        #     DatasetCatalog.remove(fold_train_name)
+        # if fold_val_name in DatasetCatalog:
+        #     DatasetCatalog.remove(fold_val_name)    
 
         # 새로운 데이터셋 등록
         DatasetCatalog.register(fold_train_name, lambda d=train_dataset: d)
@@ -407,18 +463,19 @@ def main(args):
         DatasetCatalog.register(fold_val_name, lambda d=val_dataset: d)
         MetadataCatalog.get(fold_val_name).set(thing_classes=original_metadata.thing_classes)
 
-        # 설정 업데이트
+        fold_val_name = [f'coco_trash_val_fold_{fold + 1}'] 
+
         cfg = setup(args)
         cfg.defrost()
+        cfg.FOLD_VAL_NAME = fold_val_name
         cfg.DATASETS.TRAIN = (fold_train_name,)
         cfg.DATASETS.TEST = ('coco_trash_test',)  # 테스트 데이터셋 사용
 
         # 현재 fold에 대한 학습 수행
         train(cfg, args, fold)
 
-        # Fold별로 Wandb 로그 분리 및 진행 상황 출력
+        # Fold별로 Wandb 로그
         wandb.log({"fold_completed": fold})
-        print(f"Fold {fold + 1} completed.")
 
 
 def train(cfg, args, fold):
@@ -427,9 +484,9 @@ def train(cfg, args, fold):
     trainer_params = {
         # training loop is bounded by max steps, use a large max_epochs to make
         # sure max_steps is met first
-        "max_epochs": 10**2,
+        "max_epochs": 10**8,
         "max_steps": cfg.SOLVER.MAX_ITER,
-        "val_check_interval": cfg.TEST.EVAL_PERIOD if cfg.TEST.EVAL_PERIOD > 0 else 10**8,
+        "val_check_interval": cfg.TEST.EVAL_PERIOD if cfg.TEST.EVAL_PERIOD > 0 else 100,
         "num_nodes": args.num_machines,
         "gpus": args.num_gpus,
         "num_sanity_val_steps": 0,
@@ -437,25 +494,27 @@ def train(cfg, args, fold):
     if cfg.SOLVER.AMP.ENABLED:
         trainer_params["precision"] = 16
 
+    start_time = datetime.datetime.now().strftime("%m%d_%H%M%S")
+
     # EarlyStopping 및 ModelCheckpoint 콜백 설정
     early_stopping_callback = EarlyStopping(
-        monitor="avg_val_loss",  # 평가할 지표
-        patience=5,  # 개선되지 않을 때 중지할 에포크 수
+        monitor="mAP75",  # 평가할 지표
+        patience=cfg.SOLVER.EARLY_STOPING,  # 개선되지 않을 때 중지할 에포크 수
         verbose=True,
-        mode="min"
+        mode="max"
     )
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{base_dir}/output/fold{fold}",
-        monitor="avg_val_loss",
-        filename="best_model-{epoch:02d}-{avg_val_loss:.2f}",
+        dirpath=f"{base_dir}/output/{start_time}",
+        monitor="mAP75",
+        filename=f"best_model-{start_time}-{{epoch:02d}}-{{avg_val_loss:.2f}}",
         save_top_k=1,
-        mode="min"
+        mode="max"
     )
 
 
 
-    last_checkpoint = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")
+    last_checkpoint = os.path.join(f"{base_dir}/output/{start_time}", f"model_final_fold{fold}.pth")
     module = TrainingModule(cfg)
     
     if args.resume:
@@ -464,6 +523,8 @@ def train(cfg, args, fold):
         logger.info(f"Resuming training from checkpoint: {last_checkpoint}.")
     
     trainer = pl.Trainer(callbacks=[early_stopping_callback, checkpoint_callback],**trainer_params)
+    # trainer = pl.Trainer(**trainer_params)
+
     logger.info(f"start to train with {args.num_machines} nodes and {args.num_gpus} GPUs")
 
     
