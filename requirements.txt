@@ -1,0 +1,17 @@
+pandas
+numpy
+datetime
+glob2
+IPython
+urllib3
+zipfile36
+pickle5
+shutil
+string
+tqdm
+matplotlib
+plotly
+seaborn
+Pillow
+opencv-python
+pycocotools

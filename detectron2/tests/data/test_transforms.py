@@ -8,6 +8,7 @@ from unittest import mock
 import torch
 from PIL import Image, ImageOps
 from torch.nn import functional as F
+from pycocotools.coco import COCO
 
 from detectron2.config import get_cfg
 from detectron2.data import detection_utils
@@ -266,3 +267,67 @@ class TestTransforms(unittest.TestCase):
             tfm = T.ExtentTransform(src_rect, out_shape[:2])
             out_img = tfm.apply_image(in_img)
             self.assertTrue(out_img.shape == out_shape)
+
+    def test_mixup_transform(self):
+        # 실제 이미지 load
+        image1 = Image.open("/Users/parktaeyeong/Desktop/level2-objectdetection-cv-01/dataset/train/0056.jpg")
+        image2 = Image.open("/Users/parktaeyeong/Desktop/level2-objectdetection-cv-01/dataset/train/0057.jpg")
+        
+        # numpy 배열로 변환 후 float로 타입 변환
+        image1 = np.array(image1).astype(np.float32)
+        image2 = np.array(image2).astype(np.float32)
+        
+        # coco 데이터셋 load
+        coco = COCO("/Users/parktaeyeong/Desktop/level2-objectdetection-cv-01/dataset/train.json")
+        
+        # 첫 번째 이미지의 바운딩 박스 로드
+        image_id1 = 56
+        ann_ids1 = coco.getAnnIds(imgIds=image_id1)
+        anns1 = coco.loadAnns(ann_ids1)
+        labels1 = [{'bbox': ann['bbox'], 'category_id': ann['category_id']} for ann in anns1]
+
+
+        # 두 번째 이미지의 바운딩 박스 로드
+        image_id2 = 57
+        ann_ids2 = coco.getAnnIds(imgIds=image_id2)
+        anns2 = coco.loadAnns(ann_ids2)
+        labels2 = [{'bbox': ann['bbox'], 'category_id': ann['category_id']} for ann in anns2]
+
+        # 람다 값으로 MixupTransform 인스턴스화
+        mixup_transform = T.MixupTransform(1.0)
+
+        # Mixup 변환 적용
+        mixed_image, mixed_labels = mixup_transform.get_transform(
+            image1, image2, labels1, labels2
+        )
+
+        # 예상되는 혼합 이미지 계산
+        lam = np.clip(np.random.beta(1.0, 1.0), 0.3, 0.7)
+        expected_image = lam * image1 + (1 - lam) * image2
+
+        # 혼합된 이미지가 예상 이미지와 일치하는지 확인
+        np.testing.assert_array_almost_equal(
+            mixed_image, expected_image, decimal=5, err_msg="혼합된 이미지가 예상 출력과 일치하지 않습니다."
+        )
+
+        # 혼합된 라벨이 두 라벨의 조합인지 확인
+        expected_labels = labels1 + labels2
+        self.assertEqual(
+            mixed_labels, expected_labels, "혼합된 라벨이 예상된 결합 라벨과 일치하지 않습니다."
+        )
+
+        # 추가적인 확인 (선택 사항)
+        # 혼합된 이미지가 입력 이미지와 동일한 모양인지 확인
+        self.assertEqual(
+            mixed_image.shape, image1.shape, "혼합된 이미지의 모양이 입력 이미지의 모양과 일치하지 않습니다."
+        )
+
+        # 픽셀 값이 유효한 범위 내에 있는지 확인
+        self.assertTrue(
+            np.all(mixed_image >= 0) and np.all(mixed_image <= 255),
+            "혼합된 이미지에 유효 범위를 벗어난 픽셀 값이 있습니다."
+        )
+
+        # 출력 결과 출력 (디버깅을 위한 선택 사항)
+        print("혼합된 이미지 모양:", mixed_image.shape)
+        print("혼합된 라벨:", mixed_labels)

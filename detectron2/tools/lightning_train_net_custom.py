@@ -14,14 +14,18 @@ from collections import OrderedDict
 from typing import Any, Dict, List
 import pytorch_lightning as pl  # type: ignore
 from pytorch_lightning import LightningDataModule, LightningModule
-import torch 
+import torch
 
 import pandas as pd
 
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
-from detectron2.data import build_detection_test_loader, build_detection_train_loader, detection_utils
+from detectron2.data import (
+    build_detection_test_loader,
+    build_detection_train_loader,
+    detection_utils,
+)
 from detectron2.engine import (
     DefaultTrainer,
     SimpleTrainer,
@@ -30,7 +34,7 @@ from detectron2.engine import (
     default_writers,
     hooks,
 )
-from detectron2.evaluation import print_csv_format,COCOEvaluator
+from detectron2.evaluation import print_csv_format, COCOEvaluator
 from detectron2.evaluation.testing import flatten_results_dict
 from detectron2.modeling import build_model
 from detectron2.solver import build_lr_scheduler, build_optimizer
@@ -44,12 +48,11 @@ import detectron2.data.transforms as T
 # from train_net import build_evaluator
 
 
-
 def build_evaluator(cls, cfg, dataset_name, output_folder=None):
     if output_folder is None:
-        os.makedirs('./output_eval', exist_ok = True)
-        output_folder = './output_eval'
-        
+        os.makedirs("./output_eval", exist_ok=True)
+        output_folder = "./output_eval"
+
     return COCOEvaluator(dataset_name, cfg, False, output_folder)
 
 
@@ -73,7 +76,6 @@ class TrainingModule(LightningModule):
             [cfg.INPUT.MIN_SIZE_TEST, cfg.INPUT.MIN_SIZE_TEST], cfg.INPUT.MAX_SIZE_TEST
         )
 
-
     def on_save_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         checkpoint["iteration"] = self.storage.iter
 
@@ -88,7 +90,9 @@ class TrainingModule(LightningModule):
                 self.model,
                 self.cfg.OUTPUT_DIR,
             )
-            logger.info(f"Load model weights from checkpoint: {self.cfg.MODEL.WEIGHTS}.")
+            logger.info(
+                f"Load model weights from checkpoint: {self.cfg.MODEL.WEIGHTS}."
+            )
             # Only load weights, use lightning checkpointing if you want to resume
             self.checkpointer.load(self.cfg.MODEL.WEIGHTS)
 
@@ -113,7 +117,7 @@ class TrainingModule(LightningModule):
             )
 
         loss_dict = self.model(batch)
-        SimpleTrainer.write_metrics(loss_dict, data_time,self.storage.iter) # ITER
+        SimpleTrainer.write_metrics(loss_dict, data_time, self.storage.iter)  # ITER
 
         opt = self.optimizers()
         self.storage.put_scalar(
@@ -192,18 +196,17 @@ class TrainingModule(LightningModule):
     def predict_step(self, batch, batch_idx):
 
         # test dataloder의 batch_size는 1
-        # TODO : batch size 변경 
-        prediction_string = ''
+        # TODO : batch size 변경
+        prediction_string = ""
         data = batch
         data = data[0]
-        data_file_name,data = data['file_name'],data['image']
+        data_file_name, data = data["file_name"], data["image"]
         height, width = data.shape[:2]
-        
-        #TODO? 
+
+        # TODO?
         # if self.input_format == "RGB":
         #     # whether the model expects BGR inputs or RGB
         #     original_image = original_image[:, :, ::-1]
-
 
         data = self.aug.get_transform(data).apply_image(data)
         data = torch.as_tensor(data.astype("float32").transpose(2, 0, 1))
@@ -211,18 +214,29 @@ class TrainingModule(LightningModule):
 
         inputs = {"image": data, "height": height, "width": width}
 
-        outputs = self.model([inputs])[0]['instances'] #==self.model at eval  
+        outputs = self.model([inputs])[0]["instances"]  # ==self.model at eval
 
         targets = outputs.pred_classes.cpu().tolist()
         boxes = [i.cpu().detach().numpy() for i in outputs.pred_boxes]
         scores = outputs.scores.cpu().tolist()
 
-        for target, box, score in zip(targets,boxes,scores):
-            prediction_string += (str(target) + ' ' + str(score) + ' ' + str(box[0]) + ' ' 
-            + str(box[1]) + ' ' + str(box[2]) + ' ' + str(box[3]) + ' ')
+        for target, box, score in zip(targets, boxes, scores):
+            prediction_string += (
+                str(target)
+                + " "
+                + str(score)
+                + " "
+                + str(box[0])
+                + " "
+                + str(box[1])
+                + " "
+                + str(box[2])
+                + " "
+                + str(box[3])
+                + " "
+            )
 
         return prediction_string, data_file_name
-
 
     def configure_optimizers(self):
         optimizer = build_optimizer(self.cfg, self.model)
@@ -230,106 +244,129 @@ class TrainingModule(LightningModule):
         scheduler = build_lr_scheduler(self.cfg, optimizer)
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
-##### Mapper 
+
+##### Mapper
 def TrainMapper(dataset_dict):
     dataset_dict = copy.deepcopy(dataset_dict)
-    image = detection_utils.read_image(dataset_dict['file_name'], format='BGR')
-    
+    image = detection_utils.read_image(dataset_dict["file_name"], format="BGR")
+
     transform_list = [
         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
         T.RandomBrightness(0.8, 1.8),
-        T.RandomContrast(0.6, 1.3)
+        T.RandomContrast(0.6, 1.3),
     ]
-    
+
     image, transforms = T.apply_transform_gens(transform_list, image)
-    
-    dataset_dict['image'] = torch.as_tensor(image.transpose(2,0,1).astype('float32'))
-    
+
+    dataset_dict["image"] = torch.as_tensor(image.transpose(2, 0, 1).astype("float32"))
+
     annos = [
         detection_utils.transform_instance_annotations(obj, transforms, image.shape[:2])
-        for obj in dataset_dict.pop('annotations')
-        if obj.get('iscrowd', 0) == 0
+        for obj in dataset_dict.pop("annotations")
+        if obj.get("iscrowd", 0) == 0
     ]
-    
+
     instances = detection_utils.annotations_to_instances(annos, image.shape[:2])
-    dataset_dict['instances'] = detection_utils.filter_empty_instances(instances)
-    
+    dataset_dict["instances"] = detection_utils.filter_empty_instances(instances)
+
     return dataset_dict
+
 
 def ValMapper(dataset_dict):
-    
+
     dataset_dict = copy.deepcopy(dataset_dict)
-    image = detection_utils.read_image(dataset_dict['file_name'], format='BGR')
-    
-    dataset_dict['image'] = image
-    
+    image = detection_utils.read_image(dataset_dict["file_name"], format="BGR")
+
+    dataset_dict["image"] = image
+
     return dataset_dict
 
+
 def TestMapper(dataset_dict):
-    
+
     dataset_dict = copy.deepcopy(dataset_dict)
-    image = detection_utils.read_image(dataset_dict['file_name'], format='BGR')
-    
-    dataset_dict['image'] = image
-    
+    image = detection_utils.read_image(dataset_dict["file_name"], format="BGR")
+
+    dataset_dict["image"] = image
+
     return dataset_dict
 
 
 class DataModule(LightningDataModule):
-    def __init__(self, cfg):
+    def __init__(self, cfg, args):
         super().__init__()
         self.cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
-        self.sampler = None #TODO?
-
-        print(self.cfg.DATASETS)
-
+        self.sampler = None  # TODO?
+        self.mixup_ratio = args.mixup_ratio
 
     def train_dataloader(self):
-        return build_detection_train_loader(self.cfg,mapper = TrainMapper,sampler=self.sampler)
+        return build_detection_train_loader(
+            self.cfg, mapper=TrainMapper, sampler=self.sampler
+        )
 
     def val_dataloader(self):
         dataloaders = []
-        for dataset_name in self.cfg.DATASETS.TEST: #TODO?
-            dataloaders.append(build_detection_test_loader(self.cfg, dataset_name,ValMapper))
+        for dataset_name in self.cfg.DATASETS.TEST:  # TODO?
+            dataloaders.append(
+                build_detection_test_loader(self.cfg, dataset_name, ValMapper)
+            )
         return dataloaders
-    
+
     def predict_dataloader(self):
-        return build_detection_test_loader(self.cfg, 'coco_trash_test', TestMapper) #TODO? 
-
-
-    
+        return build_detection_test_loader(
+            self.cfg, "coco_trash_test", TestMapper
+        )  # TODO? 
 
 
 def main(args):
 
     try:
-        register_coco_instances('coco_trash_train', {}, '/data/ephemeral/level2-objectdetection-cv-01/dataset/train.json', '/data/ephemeral/level2-objectdetection-cv-01/dataset')
+        register_coco_instances(
+            "coco_trash_train",
+            {},
+            "/data/ephemeral/level2-objectdetection-cv-01/dataset/train.json",
+            "/data/ephemeral/level2-objectdetection-cv-01/dataset",
+        )
     except AssertionError:
         pass
 
     try:
-        register_coco_instances('coco_trash_test', {}, '/data/ephemeral/level2-objectdetection-cv-01/dataset/test.json', '/data/ephemeral/level2-objectdetection-cv-01/dataset')
+        register_coco_instances(
+            "coco_trash_test",
+            {},
+            "/data/ephemeral/level2-objectdetection-cv-01/dataset/test.json",
+            "/data/ephemeral/level2-objectdetection-cv-01/dataset",
+        )
     except AssertionError:
         pass
 
-    MetadataCatalog.get('coco_trash_train').thing_classes = ["General trash", "Paper", "Paper pack", "Metal", 
-                                                            "Glass", "Plastic", "Styrofoam", "Plastic bag", "Battery", "Clothing"]
-
+    MetadataCatalog.get("coco_trash_train").thing_classes = [
+        "General trash",
+        "Paper",
+        "Paper pack",
+        "Metal",
+        "Glass",
+        "Plastic",
+        "Styrofoam",
+        "Plastic bag",
+        "Battery",
+        "Clothing",
+    ]
 
     cfg = setup(args)
     train(cfg, args)
 
 
-
 def train(cfg, args):
-
 
     trainer_params = {
         # training loop is bounded by max steps, use a large max_epochs to make
         # sure max_steps is met first
         "max_epochs": 10**8,
         "max_steps": cfg.SOLVER.MAX_ITER,
-        "val_check_interval": cfg.TEST.EVAL_PERIOD if cfg.TEST.EVAL_PERIOD > 0 else 10**8,
+        "val_check_interval": (
+            cfg.TEST.EVAL_PERIOD if cfg.TEST.EVAL_PERIOD > 0 else 10**8
+        ),
         "num_nodes": args.num_machines,
         "gpus": args.num_gpus,
         "num_sanity_val_steps": 0,
@@ -339,39 +376,38 @@ def train(cfg, args):
 
     last_checkpoint = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")
 
-
     module = TrainingModule(cfg)
-    
+
     if args.resume:
         # resume training from checkpoint
         trainer_params["resume_from_checkpoint"] = last_checkpoint
         logger.info(f"Resuming training from checkpoint: {last_checkpoint}.")
-    
-    
 
     trainer = pl.Trainer(**trainer_params)
-    logger.info(f"start to train with {args.num_machines} nodes and {args.num_gpus} GPUs")
+    logger.info(
+        f"start to train with {args.num_machines} nodes and {args.num_gpus} GPUs"
+    )
 
-    
-    data_module = DataModule(cfg)
+    data_module = DataModule(cfg, args)
 
     if args.eval_only:
         logger.info("Running inference")
 
-        
         pred = trainer.predict(module, data_module)
         pred_str_list = []
-        file_name_list = [] 
+        file_name_list = []
 
-        for pred_str,file_name in pred:
+        for pred_str, file_name in pred:
 
             pred_str_list.append(pred_str)
             file_name_list.append(file_name)
 
         submission = pd.DataFrame()
-        submission['PredictionString'] = pred_str_list
-        submission['image_id'] = file_name_list
-        submission.to_csv(os.path.join(cfg.OUTPUT_DIR, f'submission_det.csv'), index=None)
+        submission["PredictionString"] = pred_str_list
+        submission["image_id"] = file_name_list
+        submission.to_csv(
+            os.path.join(cfg.OUTPUT_DIR, f"submission_det.csv"), index=None
+        )
 
     else:
         logger.info("Running training")
@@ -392,6 +428,7 @@ def setup(args):
 
 def invoke_main() -> None:
     parser = default_argument_parser()
+    parser.add_argument('--mixup_alpha', type=float, default=1.0, help='Mixup alpha (lambda value) for mixup augmentation')
     args = parser.parse_args()
     logger.info("Command Line Args:", args)
     main(args)

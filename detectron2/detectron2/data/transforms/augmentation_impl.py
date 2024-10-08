@@ -42,6 +42,7 @@ __all__ = [
     "RandomCrop_CategoryAreaConstraint",
     "RandomResize",
     "MinIoURandomCrop",
+    "MixupTransform",
 ]
 
 
@@ -61,7 +62,9 @@ class RandomApply(Augmentation):
         """
         super().__init__()
         self.aug = _transform_to_aug(tfm_or_aug)
-        assert 0.0 <= prob <= 1.0, f"Probablity must be between 0.0 and 1.0 (given: {prob})"
+        assert (
+            0.0 <= prob <= 1.0
+        ), f"Probablity must be between 0.0 and 1.0 (given: {prob})"
         self.prob = prob
 
     def get_transform(self, *args):
@@ -94,7 +97,9 @@ class RandomFlip(Augmentation):
         super().__init__()
 
         if horizontal and vertical:
-            raise ValueError("Cannot do both horiz and vert. Please use two Flip instead.")
+            raise ValueError(
+                "Cannot do both horiz and vert. Please use two Flip instead."
+            )
         if not horizontal and not vertical:
             raise ValueError("At least one of horiz or vert has to be True!")
         self._init(locals())
@@ -141,7 +146,11 @@ class ResizeShortestEdge(Augmentation):
 
     @torch.jit.unused
     def __init__(
-        self, short_edge_length, max_size=sys.maxsize, sample_style="range", interp=Image.BILINEAR
+        self,
+        short_edge_length,
+        max_size=sys.maxsize,
+        sample_style="range",
+        interp=Image.BILINEAR,
     ):
         """
         Args:
@@ -168,7 +177,9 @@ class ResizeShortestEdge(Augmentation):
     def get_transform(self, image):
         h, w = image.shape[:2]
         if self.is_range:
-            size = np.random.randint(self.short_edge_length[0], self.short_edge_length[1] + 1)
+            size = np.random.randint(
+                self.short_edge_length[0], self.short_edge_length[1] + 1
+            )
         else:
             size = np.random.choice(self.short_edge_length)
         if size == 0:
@@ -242,7 +253,11 @@ class ResizeScale(Augmentation):
         output_size = np.round(np.multiply(input_size, output_scale)).astype(int)
 
         return ResizeTransform(
-            input_size[0], input_size[1], int(output_size[0]), int(output_size[1]), self.interp
+            input_size[0],
+            input_size[1],
+            int(output_size[0]),
+            int(output_size[1]),
+            self.interp,
         )
 
     def get_transform(self, image: np.ndarray) -> Transform:
@@ -256,7 +271,9 @@ class RandomRotation(Augmentation):
     number of degrees counter clockwise around the given center.
     """
 
-    def __init__(self, angle, expand=True, center=None, sample_style="range", interp=None):
+    def __init__(
+        self, angle, expand=True, center=None, sample_style="range", interp=None
+    ):
         """
         Args:
             angle (list[float]): If ``sample_style=="range"``,
@@ -301,7 +318,9 @@ class RandomRotation(Augmentation):
         if angle % 360 == 0:
             return NoOpTransform()
 
-        return RotationTransform(h, w, angle, expand=self.expand, center=center, interp=self.interp)
+        return RotationTransform(
+            h, w, angle, expand=self.expand, center=center, interp=self.interp
+        )
 
 
 class FixedSizeCrop(Augmentation):
@@ -340,7 +359,12 @@ class FixedSizeCrop(Augmentation):
         offset = np.multiply(max_offset, np.random.uniform(0.0, 1.0))
         offset = np.round(offset).astype(int)
         return CropTransform(
-            offset[1], offset[0], output_size[1], output_size[0], input_size[1], input_size[0]
+            offset[1],
+            offset[0],
+            output_size[1],
+            output_size[0],
+            input_size[1],
+            input_size[0],
         )
 
     def _get_pad(self, image: np.ndarray) -> Transform:
@@ -400,7 +424,9 @@ class RandomCrop(Augmentation):
     def get_transform(self, image):
         h, w = image.shape[:2]
         croph, cropw = self.get_crop_size((h, w))
-        assert h >= croph and w >= cropw, "Shape computation in {} has bugs.".format(self)
+        assert h >= croph and w >= cropw, "Shape computation in {} has bugs.".format(
+            self
+        )
         h0 = np.random.randint(h - croph + 1)
         w0 = np.random.randint(w - cropw + 1)
         return CropTransform(w0, h0, cropw, croph)
@@ -425,8 +451,12 @@ class RandomCrop(Augmentation):
             return (min(self.crop_size[0], h), min(self.crop_size[1], w))
         elif self.crop_type == "absolute_range":
             assert self.crop_size[0] <= self.crop_size[1]
-            ch = np.random.randint(min(h, self.crop_size[0]), min(h, self.crop_size[1]) + 1)
-            cw = np.random.randint(min(w, self.crop_size[0]), min(w, self.crop_size[1]) + 1)
+            ch = np.random.randint(
+                min(h, self.crop_size[0]), min(h, self.crop_size[1]) + 1
+            )
+            cw = np.random.randint(
+                min(w, self.crop_size[0]), min(w, self.crop_size[1]) + 1
+            )
             return ch, cw
         else:
             raise NotImplementedError("Unknown crop type {}".format(self.crop_type))
@@ -472,7 +502,10 @@ class RandomCrop_CategoryAreaConstraint(Augmentation):
                 labels, cnt = np.unique(sem_seg_temp, return_counts=True)
                 if self.ignored_category is not None:
                     cnt = cnt[labels != self.ignored_category]
-                if len(cnt) > 1 and np.max(cnt) < np.sum(cnt) * self.single_category_max_area:
+                if (
+                    len(cnt) > 1
+                    and np.max(cnt) < np.sum(cnt) * self.single_category_max_area
+                ):
                     break
             crop_tfm = CropTransform(x0, y0, crop_size[1], crop_size[0])
             return crop_tfm
@@ -519,7 +552,10 @@ class RandomExtent(Augmentation):
 
         return ExtentTransform(
             src_rect=(src_rect[0], src_rect[1], src_rect[2], src_rect[3]),
-            output_size=(int(src_rect[3] - src_rect[1]), int(src_rect[2] - src_rect[0])),
+            output_size=(
+                int(src_rect[3] - src_rect[1]),
+                int(src_rect[2] - src_rect[0]),
+            ),
         )
 
 
@@ -621,7 +657,11 @@ class RandomLighting(Augmentation):
         super().__init__()
         self._init(locals())
         self.eigen_vecs = np.array(
-            [[-0.5675, 0.7192, 0.4009], [-0.5808, -0.0045, -0.8140], [-0.5836, -0.6948, 0.4203]]
+            [
+                [-0.5675, 0.7192, 0.4009],
+                [-0.5808, -0.0045, -0.8140],
+                [-0.5836, -0.6948, 0.4203],
+            ]
         )
         self.eigen_vals = np.array([0.2175, 0.0188, 0.0045])
 
@@ -629,7 +669,9 @@ class RandomLighting(Augmentation):
         assert image.shape[-1] == 3, "RandomLighting only works on RGB images"
         weights = np.random.normal(scale=self.scale, size=3)
         return BlendTransform(
-            src_image=self.eigen_vecs.dot(weights * self.eigen_vals), src_weight=1.0, dst_weight=1.0
+            src_image=self.eigen_vecs.dot(weights * self.eigen_vals),
+            src_weight=1.0,
+            dst_weight=1.0,
         )
 
 
@@ -706,7 +748,9 @@ class MinIoURandomCrop(Augmentation):
                 left = random.uniform(w - new_w)
                 top = random.uniform(h - new_h)
 
-                patch = np.array((int(left), int(top), int(left + new_w), int(top + new_h)))
+                patch = np.array(
+                    (int(left), int(top), int(left + new_w), int(top + new_h))
+                )
                 # Line or point crop is not allowed
                 if patch[2] == patch[0] or patch[3] == patch[1]:
                     continue
@@ -734,3 +778,61 @@ class MinIoURandomCrop(Augmentation):
                     if not mask.any():
                         continue
                 return CropTransform(int(left), int(top), int(new_w), int(new_h))
+
+
+class MixupTransform(Augmentation):
+    """
+    Mixup data augmentation for COCO format labels.
+    It mixes the image and label (including bounding boxes) with another image and label
+    based on a random lambda value sampled from a beta distribution.
+    """
+
+    def __init__(self, mixup_alpha: float = 0.4):
+        """
+        Args:
+            mixup_alpha (float): parameter of the beta distribution.
+                Determines how strongly the two images and labels are mixed.
+        """
+        super().__init__()
+        self._init(locals())
+        self.mixup_alpha = mixup_alpha
+
+    def get_transform(self, image1, image2, labels1, labels2):
+        """
+        Apply Mixup augmentation to two images and their COCO-style labels.
+
+        Args:
+            image1 (np.ndarray): The first image to mix.
+            image2 (np.ndarray): The second image to mix.
+            labels1 (list[dict]): COCO-style annotations for the first image.
+            labels2 (list[dict]): COCO-style annotations for the second image.
+
+        Returns:
+            tuple: Mixed image, combined labels.
+        """
+
+        # Blend the two images
+        lam = np.clip(np.random.beta(self.mixup_alpha, self.mixup_alpha), 0.4, 0.6)
+        mixed_image = lam * image1 + (1 - lam) * image2
+
+        # Combine the labels from both images
+        mixed_labels = self._combine_labels(labels1, labels2)
+
+        return mixed_image, mixed_labels
+
+    def _combine_labels(self, labels1, labels2):
+        """
+        Combine labels from two images. Since Mixup for object detection doesn't modify
+        the bounding boxes, it simply concatenates the two lists of labels.
+
+        Args:
+            labels1 (list[dict]): COCO-style annotations for the first image.
+            labels2 (list[dict]): COCO-style annotations for the second image.
+
+        Returns:
+            list[dict]: Combined labels from both images.
+        """
+        # Simply concatenate the lists of bounding boxes and labels
+        combined_labels = labels1 + labels2
+
+        return combined_labels
