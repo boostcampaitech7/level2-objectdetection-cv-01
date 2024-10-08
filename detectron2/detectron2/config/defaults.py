@@ -597,6 +597,8 @@ _C.SOLVER.CLIP_GRADIENTS.NORM_TYPE = 2.0
 # To use AMP in inference, run inference under autocast()
 _C.SOLVER.AMP = CN({"ENABLED": False})
 
+# Setting Optimizer
+_C.SOLVER.OPTIMIZER = "AdamW"
 # ---------------------------------------------------------------------------- #
 # Specific test options
 # ---------------------------------------------------------------------------- #

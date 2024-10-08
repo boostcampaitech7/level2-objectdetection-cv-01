@@ -180,6 +180,7 @@ setup(
         "cloudpickle",
         "tqdm>4.29.0",
         "tensorboard",
+        "ensemble-boxes",
         # Lock version of fvcore/iopath because they may have breaking changes
         # NOTE: when updating fvcore/iopath version, make sure fvcore depends
         # on compatible version of iopath.

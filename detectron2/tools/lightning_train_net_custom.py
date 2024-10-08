@@ -12,11 +12,13 @@ import time
 import copy
 import wandb
 import weakref
+import shutil
 from collections import OrderedDict
 from typing import Any, Dict, List
 import pytorch_lightning as pl  # type: ignore
 from pytorch_lightning import LightningDataModule
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
+from torchvision.ops import nms
 
 import torch 
 
@@ -47,7 +49,7 @@ from detectron2.data import MetadataCatalog, DatasetCatalog
 from detectron2 import model_zoo
 import detectron2.data.transforms as T
 
-
+from ensemble_boxes import weighted_boxes_fusion
 
 def build_evaluator(cfg, dataset_name, output_folder=None):
     if output_folder is None:
@@ -62,14 +64,14 @@ logger = logging.getLogger("detectron2")
 
 
 class TrainingModule(pl.LightningModule):
-    def __init__(self, cfg):
+    def __init__(self, cfg, eval_only=False):
         super().__init__()
         if not logger.isEnabledFor(logging.INFO):  # setup_logger is not called for d2
             setup_logger()
         self.cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
         self.storage: EventStorage = None
         self.model = build_model(self.cfg)
-
+        self.eval_only = eval_only
         self.start_iter = 0
         self.max_iter = cfg.SOLVER.MAX_ITER
 
@@ -84,7 +86,13 @@ class TrainingModule(pl.LightningModule):
 
     def on_load_checkpoint(self, checkpointed_state: Dict[str, Any]) -> None:
         self.start_iter = checkpointed_state["iteration"]
-        self.storage.iter = self.start_iter
+        # If eval_only, do not initialize storage
+        if not self.eval_only:
+            # Initialize storage if not in eval_only mode
+            if self.storage is None:
+                self.storage = EventStorage(self.start_iter)
+            else:
+                self.storage.iter = self.start_iter
 
     def setup(self, stage: str):
         if self.cfg.MODEL.WEIGHTS:
@@ -160,10 +168,11 @@ class TrainingModule(pl.LightningModule):
                 
         # 저장한 학습 손실 목록 초기화
         # self.train_loss = []
+        start_time = datetime.datetime.now().strftime("%m%d_%H%M%S")
 
         self.iteration_timer.after_train()
         if comm.is_main_process():
-            self.checkpointer.save("model_final")
+            self.checkpointer.save(f"model_final{start_time}")
         for writer in self.writers:
             writer.write()
             writer.close()
@@ -249,49 +258,16 @@ class TrainingModule(pl.LightningModule):
     def on_predict_epoch_start(self):
         # return super().on_predict_epoch_start()
         self.model.eval()
-
-    # def predict_step(self, batch, batch_idx):
-
-    #     # test dataloder의 batch_size는 1
-    #     # TODO : batch size 변경 
-    #     prediction_string = ''
-    #     data = batch
-    #     data = data[0]
-    #     data_file_name,data = data['file_name'],data['image']
-    #     height, width = data.shape[:2]
-        
-    #     #TODO? 
-    #     # if self.input_format == "RGB":
-    #     #     # whether the model expects BGR inputs or RGB
-    #     #     original_image = original_image[:, :, ::-1]
-
-
-    #     data = self.aug.get_transform(data).apply_image(data)
-    #     data = torch.as_tensor(data.astype("float32").transpose(2, 0, 1))
-    #     data.to(self.cfg.MODEL.DEVICE)
-
-    #     inputs = {"image": data, "height": height, "width": width}
-
-    #     outputs = self.model([inputs])[0]['instances'] #==self.model at eval  
-
-    #     targets = outputs.pred_classes.cpu().tolist()
-    #     boxes = [i.cpu().detach().numpy() for i in outputs.pred_boxes]
-    #     scores = outputs.scores.cpu().tolist()
-
-    #     for target, box, score in zip(targets,boxes,scores):
-    #         prediction_string += (str(target) + ' ' + str(score) + ' ' + str(box[0]) + ' ' 
-    #         + str(box[1]) + ' ' + str(box[2]) + ' ' + str(box[3]) + ' ')
-
-    #     return prediction_string, data_file_name
+    
     
     def predict_step(self, batch, batch_idx):
         prediction_results = []
-    
+        threshold = 0.5
         for data in batch:
             prediction_string = ''
             data_file_name, data_image = data['file_name'], data['image']
             height, width = data_image.shape[:2]
-
+    
             # 이미지 변환
             data_image = self.aug.get_transform(data_image).apply_image(data_image)
             data_image = torch.as_tensor(data_image.astype("float32").transpose(2, 0, 1))
@@ -300,10 +276,19 @@ class TrainingModule(pl.LightningModule):
             inputs = {"image": data_image, "height": height, "width": width}
             outputs = self.model([inputs])[0]['instances']  # 예측
 
+            if not outputs:
+                print(f"No instances found in the out for file: {data_file_name}")
+                continue
+
             # 예측 결과 추출
             targets = outputs.pred_classes.cpu().tolist()
             boxes = [i.cpu().detach().numpy() for i in outputs.pred_boxes]
             scores = outputs.scores.cpu().tolist()
+
+            # keep_indices = [i for i, score in enumerate(scores) if score >= threshold]
+            targets = [targets[i] for i in keep_indices]
+            boxes = [boxes[i] for i in keep_indices]
+            scores = [scores[i] for i in keep_indices]
 
             # 예측 문자열 생성
             for target, box, score in zip(targets, boxes, scores):
@@ -377,9 +362,6 @@ class DataModule(LightningDataModule):
         self.cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
         self.sampler = None #TODO?
 
-        print(self.cfg.DATASETS)
-
-
     def train_dataloader(self):
         return build_detection_train_loader(self.cfg,mapper = TrainMapper,sampler=self.sampler)
 
@@ -403,6 +385,11 @@ def main(args):
 
     global base_dir
     base_dir = '/home/minipin/cv-01/level2-objectdetection-cv-01/'
+
+    start_time = datetime.datetime.now().strftime("%m%d_%H%M%S")
+    checkpoint_dir = os.path.join(base_dir, 'output', start_time)
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
     # 학습 및 테스트 데이터셋 등록
     try:
         register_coco_instances('coco_trash_train', {}, base_dir + 'dataset/train.json', base_dir + 'dataset')
@@ -432,53 +419,57 @@ def main(args):
     y = np.array([v[1] for v in var])
     groups = np.array([v[0] for v in var])
 
-    # StratifiedGroupKFold 적용
-    num_folds, random_state = 5, 7
-    skf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=random_state)
-    
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y, groups)):
-        # Train, Validation 데이터셋 생성
-        train_image_ids = groups[train_idx]
-        val_image_ids = groups[val_idx]
 
-        train_dataset = [item for item in original_dataset if item['image_id'] in train_image_ids]
-        val_dataset = [item for item in original_dataset if item['image_id'] in val_image_ids]
-
-        # Fold별로 데이터셋 등록
-        global fold_train_name
-        fold_train_name= f'coco_trash_train_fold_{fold+1}'
-        global fold_val_name 
-        fold_val_name = f'coco_trash_val_fold_{fold+1}'
-
-        # 기존에 동일한 이름으로 등록된 데이터셋이 있다면 삭제
-        # if fold_train_name in DatasetCatalog:
-        #     DatasetCatalog.remove(fold_train_name)
-        # if fold_val_name in DatasetCatalog:
-        #     DatasetCatalog.remove(fold_val_name)    
-
-        # 새로운 데이터셋 등록
-        DatasetCatalog.register(fold_train_name, lambda d=train_dataset: d)
-        MetadataCatalog.get(fold_train_name).set(thing_classes=original_metadata.thing_classes)
-        
-        DatasetCatalog.register(fold_val_name, lambda d=val_dataset: d)
-        MetadataCatalog.get(fold_val_name).set(thing_classes=original_metadata.thing_classes)
-
-        fold_val_name = [f'coco_trash_val_fold_{fold + 1}'] 
-
+    if args.eval_only:
         cfg = setup(args)
-        cfg.defrost()
-        cfg.FOLD_VAL_NAME = fold_val_name
-        cfg.DATASETS.TRAIN = (fold_train_name,)
-        cfg.DATASETS.TEST = ('coco_trash_test',)  # 테스트 데이터셋 사용
+        train(cfg, args, 0, checkpoint_dir, start_time)
 
-        # 현재 fold에 대한 학습 수행
-        train(cfg, args, fold)
+    else:
+        # StratifiedGroupKFold 적용
+        num_folds, random_state = 5, 1999
+        skf = StratifiedGroupKFold(n_splits=num_folds, shuffle=True, random_state=random_state)
+        
+        for fold, (train_idx, val_idx) in enumerate(skf.split(X, y, groups)):
+            # Train, Validation 데이터셋 생성
+            train_image_ids = groups[train_idx]
+            val_image_ids = groups[val_idx]
 
-        # Fold별로 Wandb 로그
-        wandb.log({"fold_completed": fold})
+            train_dataset = [item for item in original_dataset if item['image_id'] in train_image_ids]
+            val_dataset = [item for item in original_dataset if item['image_id'] in val_image_ids]
+
+            # Fold별로 데이터셋 등록
+            global fold_train_name
+            fold_train_name= f'coco_trash_train_fold_{fold+1}'
+            global fold_val_name 
+            fold_val_name = f'coco_trash_val_fold_{fold+1}'
+
+            # 기존에 동일한 이름으로 등록된 데이터셋이 있다면 삭제
+            if fold_train_name in DatasetCatalog:
+                DatasetCatalog.remove(fold_train_name)
+            if fold_val_name in DatasetCatalog:
+                DatasetCatalog.remove(fold_val_name)    
+
+            # 새로운 데이터셋 등록
+            DatasetCatalog.register(fold_train_name, lambda d=train_dataset: d)
+            MetadataCatalog.get(fold_train_name).set(thing_classes=original_metadata.thing_classes)
+            
+            DatasetCatalog.register(fold_val_name, lambda d=val_dataset: d)
+            MetadataCatalog.get(fold_val_name).set(thing_classes=original_metadata.thing_classes)
+
+            cfg = setup(args)
+            cfg.defrost()
+            cfg.FOLD_VAL_NAME = [fold_val_name] 
+            cfg.DATASETS.TRAIN = (fold_train_name,)
+            cfg.DATASETS.TEST = ('coco_trash_test',)  
+        
+            # 현재 fold에 대한 학습 수행
+            train(cfg, args, fold, checkpoint_dir, start_time)
+
+            # Fold별로 Wandb 로그
+            wandb.log({"fold_completed": fold})
 
 
-def train(cfg, args, fold):
+def train(cfg, args, fold, checkpoint_dir, start_time):
 
 
     trainer_params = {
@@ -494,62 +485,73 @@ def train(cfg, args, fold):
     if cfg.SOLVER.AMP.ENABLED:
         trainer_params["precision"] = 16
 
-    start_time = datetime.datetime.now().strftime("%m%d_%H%M%S")
-
     # EarlyStopping 및 ModelCheckpoint 콜백 설정
-    early_stopping_callback = EarlyStopping(
-        monitor="mAP75",  # 평가할 지표
-        patience=cfg.SOLVER.EARLY_STOPING,  # 개선되지 않을 때 중지할 에포크 수
-        verbose=True,
-        mode="max"
-    )
+    # early_stopping_callback = EarlyStopping(
+    #     monitor="mAP75",  # 평가할 지표
+    #     patience=cfg.SOLVER.EARLY_STOPING,  # 개선되지 않을 때 중지할 에포크 수
+    #     verbose=True,
+    #     mode="max"
+    # )
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f"{base_dir}/output/{start_time}",
+        dirpath=checkpoint_dir,
         monitor="mAP75",
-        filename=f"best_model-{start_time}-{{epoch:02d}}-{{avg_val_loss:.2f}}",
+        filename=f"best_model-fold{fold}-{{epoch:02d}}-mAP{{mAP:.2f}}",
         save_top_k=1,
         mode="max"
     )
 
-
-
-    last_checkpoint = os.path.join(f"{base_dir}/output/{start_time}", f"model_final_fold{fold}.pth")
-    module = TrainingModule(cfg)
+    # last_checkpoint = os.path.join(f"{base_dir}/output/{start_time}", f"model_final_fold{fold}.pth")
     
-    if args.resume:
+    # if args.resume:
         # resume training from checkpoint
-        trainer_params["resume_from_checkpoint"] = last_checkpoint
-        logger.info(f"Resuming training from checkpoint: {last_checkpoint}.")
+        # trainer_params["resume_from_checkpoint"] = last_checkpoint
+        # logger.info(f"Resuming training from checkpoint: {last_checkpoint}.")
     
-    trainer = pl.Trainer(callbacks=[early_stopping_callback, checkpoint_callback],**trainer_params)
-    # trainer = pl.Trainer(**trainer_params)
-
+    trainer = pl.Trainer(callbacks=checkpoint_callback,**trainer_params)
     logger.info(f"start to train with {args.num_machines} nodes and {args.num_gpus} GPUs")
 
-    
     data_module = DataModule(cfg)
-
     if args.eval_only:
+        os.rmdir(checkpoint_dir)
         logger.info("Running inference")
-
         
-        pred = trainer.predict(module, data_module)
-        pred_str_list = []
-        file_name_list = [] 
+        eval_dir = os.path.join(cfg.OUTPUT_DIR,"1007_111543")
+        # Get the list of all checkpoints in the fold-specific folder
+        checkpoints = [os.path.join(eval_dir, ckpt) for ckpt in os.listdir(eval_dir) if ckpt.endswith(".ckpt")]
+        results = []
 
-        for pred_str,file_name in pred:
+        # Iterate through checkpoints and make predictions
+        for checkpoint_path in checkpoints:
+            logger.info(f"Evaluating checkpoint: {checkpoint_path}")
+            
+            cfg.defrost()
+            checkpoint_filename = os.path.basename(checkpoint_path)
+            temp_weights_path = os.path.join(eval_dir, f"weight_only_{checkpoint_filename}")
 
-            pred_str_list.append(pred_str)
-            image_id = os.path.join(*file_name.split(os.sep)[-2:])
-            file_name_list.append(image_id)
+            cfg.MODEL.WEIGHTS = extract_weights_only(checkpoint_path, temp_weights_path)
+            # cfg.MODEL.WEIGHTS = checkpoint_path
+            module = TrainingModule(cfg=cfg, eval_onl   y=True)
 
-        submission = pd.DataFrame()
-        submission['PredictionString'] = pred_str_list
-        submission['image_id'] = file_name_list
-        submission.to_csv(os.path.join(cfg.OUTPUT_DIR, f'submission_det.csv'), index=None)
+            # module = TrainingModule.load_from_checkpoint(checkpoint_path, cfg=cfg, eval_only=True)
+            pred = trainer.predict(module, data_module)
+
+            for pre in pred:
+                for pred_str, file_name in pre:
+                    image_id = os.path.join(*file_name.split(os.sep)[-2:])
+                    results.append((image_id, pred_str))
+
+        # Perform wbf to combine results from all checkpoints
+        final_predictions = apply_weighted_boxes_fusion(results)
+
+        # Save the final submission
+        submission = pd.DataFrame(final_predictions, columns=['PredictionString','image_id'])
+        submission.to_csv(os.path.join(eval_dir, f'submission_det.csv'), index=None)
+
+        return
 
     else:
+        module = TrainingModule(cfg)
         logger.info("Running training")
         trainer.fit(module, data_module)
 
@@ -575,6 +577,119 @@ def invoke_main() -> None:
     logger.info("Command Line Args: %s", args)
     main(args)
 
+def extract_weights_only(checkpoint_path, output_path):
+    # Load the checkpoint and extract only the model weights
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+        print(f"Extracted state_dict keys: {state_dict.keys()}")  # 가중치 키 확인
+    else:
+        state_dict = checkpoint  # If not a PyTorch Lightning checkpoint
+    # Save the extracted weights to a temporary file
+    torch.save(state_dict, output_path)
+    return output_path
+
+def apply_weighted_boxes_fusion(predictions):
+    voting_results = {}
+
+    for image_id, pred_str in predictions:
+        if image_id not in voting_results:
+            voting_results[image_id] = []
+
+        # 예측 문자열을 파싱하여 bounding box와 점수를 추출
+        boxes, scores, labels = parse_prediction_string(pred_str)
+        voting_results[image_id].append((boxes, scores, labels))
+
+    # 각 이미지 ID별로 예측 결과를 합칩니다.
+    final_results = []
+    for image_id, preds in voting_results.items():
+        combined_boxes, combined_scores, combined_labels = aggregate_wbf_predictions(preds)
+        final_pred_str = create_prediction_string(combined_boxes, combined_scores, combined_labels)
+        final_results.append((final_pred_str, image_id))
+
+    return final_results
+
+def parse_prediction_string(pred_str):
+    elements = pred_str.strip().split()
+    boxes = []
+    scores = []
+    labels = []
+
+    for i in range(0, len(elements), 6):
+        label = int(elements[i])
+        score = float(elements[i + 1])
+        x_min = float(elements[i + 2])
+        y_min = float(elements[i + 3])
+        width = float(elements[i + 4])
+        height = float(elements[i + 5])
+        
+        # Convert COCO format (x_min, y_min, width, height) to Pascal VOC format (x_min, y_min, x_max, y_max)
+        x_max = x_min + width
+        y_max = y_min + height
+        boxes.append([x_min, y_min, x_max, y_max])
+        scores.append(score)
+        labels.append(label)
+
+    return torch.tensor(boxes), torch.tensor(scores), torch.tensor(labels)
+
+def aggregate_wbf_predictions(preds):
+    all_boxes = []
+    all_scores = []
+    all_labels = []
+    image_width = 1024 
+    image_height = 1024
+    
+    for boxes, scores, labels in preds:
+        # Skip empty predictions
+        if boxes.numel() == 0:
+            continue
+
+        # confidence score를 기준으로 내림차순 정렬
+        sorted_indices = torch.argsort(scores, descending=True)
+        boxes = boxes[sorted_indices]
+        scores = scores[sorted_indices]
+        labels = labels[sorted_indices]
+
+        all_boxes.append(boxes.numpy().tolist())
+        all_scores.append(scores.numpy().tolist())
+        all_labels.append(labels.numpy().tolist())
+
+    # Check if there are any predictions to aggregate
+    if len(all_boxes) == 0:
+        # Return empty tensors if there are no valid predictions
+        return torch.empty((0, 4)), torch.empty((0,)), torch.empty((0,))
+    elif len(all_boxes) == 1:
+        return torch.tensor(all_boxes[0]), torch.tensor(all_scores[0]), torch.tensor(all_labels[0])
+    
+    # WBF를 적용하기 위해 bounding box 좌표를 정규화합니다.
+    for i in range(len(all_boxes)):
+        for j in range(len(all_boxes[i])):
+            all_boxes[i][j][0] /= image_width  # x_min 정규화
+            all_boxes[i][j][2] /= image_width  # x_max 정규화
+            all_boxes[i][j][1] /= image_height  # y_min 정규화
+            all_boxes[i][j][3] /= image_height  # y_max 정규화
+
+    # Weighted Boxes Fusion 적용
+    wbf_boxes, wbf_scores, wbf_labels = weighted_boxes_fusion(
+        all_boxes, all_scores, all_labels, iou_thr=0.5, skip_box_thr=0.0001
+    )
+
+    # 정규화된 좌표를 이미지의 실제 크기로 되돌립니다.
+    for i in range(len(wbf_boxes)):
+        wbf_boxes[i][0] *= image_width  # x_min 역정규화
+        wbf_boxes[i][2] *= image_width  # x_max 역정규화
+        wbf_boxes[i][1] *= image_height  # y_min 역정규화
+        wbf_boxes[i][3] *= image_height  # y_max 역정규화
+
+    return torch.tensor(wbf_boxes), torch.tensor(wbf_scores), torch.tensor(wbf_labels)
+
+
+def create_prediction_string(boxes, scores, labels):
+    pred_str = ''
+    for label, score, box in zip(labels, scores, boxes):
+        x_min, y_min, x_max, y_max = box.tolist()
+        pred_str += f"{int(label)} {score:.14f} {x_min:.5f} {y_min:.5f} {x_max:.5f} {y_max:.5f} "
+    return pred_str.strip()
 
 if __name__ == "__main__":
     invoke_main()  # pragma: no cover
