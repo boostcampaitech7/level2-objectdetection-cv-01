@@ -249,36 +249,74 @@ class TrainingModule(LightningModule):
         scheduler.step()
 
 
+def load_random_coco_image(coco, base_dir):
+    """
+    COCO에서 랜덤 이미지를 선택하여 해당 이미지와 어노테이션을 반환.
+
+    Args:
+        coco (COCO): COCO 객체.
+        base_dir (str): 이미지가 저장된 기본 디렉토리 경로.
+
+    Returns:
+        random_image (np.ndarray): 랜덤으로 선택된 이미지.
+        random_anns (list[dict]): 랜덤 이미지에 대한 어노테이션 리스트.
+    """
+    coco_ids = coco.getImgIds()
+    random_coco_id = coco_ids[torch.randint(0, len(coco_ids), (1,)).item()]
+    random_image_info = coco.loadImgs(random_coco_id)[0]
+    random_image = detection_utils.read_image(
+        base_dir + random_image_info["file_name"], format="BGR"
+    )
+    random_ann_id = coco.getAnnIds(imgIds=random_coco_id)
+    random_anns = coco.loadAnns(random_ann_id)
+
+    for anns in random_anns:
+        anns["bbox_mode"] = BoxMode.XYXY_ABS
+
+    return random_image, random_anns
+
+
+def apply_mixup(image, annotations, random_image, random_annotations, mixup_alpha):
+    """
+    Mixup augmentation을 적용.
+
+    Args:
+        image (np.ndarray): 원본 이미지.
+        annotations (list[dict]): 원본 이미지의 어노테이션.
+        random_image (np.ndarray): Mixup에 사용할 두 번째 이미지.
+        random_annotations (list[dict]): 두 번째 이미지의 어노테이션.
+        mixup_alpha (float): Mixup의 alpha 파라미터.
+
+    Returns:
+        mixed_image (np.ndarray): Mixup이 적용된 이미지.
+        mixed_annotations (list[dict]): Mixup이 적용된 어노테이션.
+    """
+    return T.MixupTransform(mixup_alpha).get_transform(
+        image, annotations, random_image, random_annotations
+    )
+
+
 ##### Mapper
 def TrainMapper(dataset_dict):
     dataset_dict = copy.deepcopy(dataset_dict)
     image = detection_utils.read_image(
         dataset_dict["file_name"], format="BGR"
     )  # ndarray
+
     mixup_alpha = 1.0
     mixup_ratio = 0.4  # 40% 확률로 mixup augmentation
 
+    # Mixup 적용 여부 결정
     if mixup_ratio > 0 and torch.rand(1).item() < mixup_ratio:
         coco = COCO(
             "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/train.json"
         )
-        coco_ids = coco.getImgIds()
-        random_coco_id = coco_ids[torch.randint(0, len(coco_ids), (1,)).item()]
-        random_image = coco.loadImgs(random_coco_id)[0]
-        random_image = detection_utils.read_image(
-            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/"
-            + random_image["file_name"],
-            format="BGR",
+        random_image, random_anns = load_random_coco_image(
+            coco, "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/"
         )
-        random_ann_id = coco.getAnnIds(imgIds=random_coco_id)
-        random_anns = coco.loadAnns(random_ann_id)
-
-        for anns in random_anns:
-            anns["bbox_mode"] = BoxMode.XYXY_ABS
-
-        image, dataset_dict["annotations"] = T.MixupTransform(
-            mixup_alpha
-        ).get_transform(image, dataset_dict["annotations"], random_image, random_anns)
+        image, dataset_dict["annotations"] = apply_mixup(
+            image, dataset_dict["annotations"], random_image, random_anns, mixup_alpha
+        )
 
     transform_list = [
         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
