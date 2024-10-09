@@ -17,7 +17,7 @@ from pytorch_lightning import LightningDataModule, LightningModule
 import torch
 
 import pandas as pd
-
+from pycocotools.coco import COCO
 import detectron2.utils.comm as comm
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import get_cfg
@@ -42,6 +42,7 @@ from detectron2.utils.events import EventStorage
 from detectron2.utils.logger import setup_logger
 from detectron2.data.datasets import register_coco_instances
 from detectron2.data import MetadataCatalog
+from detectron2.structures import BoxMode
 from detectron2 import model_zoo
 import detectron2.data.transforms as T
 
@@ -244,11 +245,40 @@ class TrainingModule(LightningModule):
         scheduler = build_lr_scheduler(self.cfg, optimizer)
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
+    def lr_scheduler_step(self, scheduler, optimizer_idx, metric):
+        scheduler.step()
+
 
 ##### Mapper
 def TrainMapper(dataset_dict):
     dataset_dict = copy.deepcopy(dataset_dict)
-    image = detection_utils.read_image(dataset_dict["file_name"], format="BGR")
+    image = detection_utils.read_image(
+        dataset_dict["file_name"], format="BGR"
+    )  # ndarray
+    mixup_alpha = 1.0
+    mixup_ratio = 0.4  # 40% 확률로 mixup augmentation
+
+    if mixup_ratio > 0 and torch.rand(1).item() < mixup_ratio:
+        coco = COCO(
+            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/train.json"
+        )
+        coco_ids = coco.getImgIds()
+        random_coco_id = coco_ids[torch.randint(0, len(coco_ids), (1,)).item()]
+        random_image = coco.loadImgs(random_coco_id)[0]
+        random_image = detection_utils.read_image(
+            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/"
+            + random_image["file_name"],
+            format="BGR",
+        )
+        random_ann_id = coco.getAnnIds(imgIds=random_coco_id)
+        random_anns = coco.loadAnns(random_ann_id)
+
+        for anns in random_anns:
+            anns["bbox_mode"] = BoxMode.XYXY_ABS
+
+        image, dataset_dict["annotations"] = T.MixupTransform(
+            mixup_alpha
+        ).get_transform(image, dataset_dict["annotations"], random_image, random_anns)
 
     transform_list = [
         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
@@ -297,6 +327,7 @@ class DataModule(LightningDataModule):
         super().__init__()
         self.cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
         self.sampler = None  # TODO?
+        self.mixup_alpha = args.mixup_alpha
         self.mixup_ratio = args.mixup_ratio
 
     def train_dataloader(self):
@@ -315,7 +346,7 @@ class DataModule(LightningDataModule):
     def predict_dataloader(self):
         return build_detection_test_loader(
             self.cfg, "coco_trash_test", TestMapper
-        )  # TODO? 
+        )  # TODO?
 
 
 def main(args):
@@ -324,8 +355,8 @@ def main(args):
         register_coco_instances(
             "coco_trash_train",
             {},
-            "/data/ephemeral/level2-objectdetection-cv-01/dataset/train.json",
-            "/data/ephemeral/level2-objectdetection-cv-01/dataset",
+            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/train.json",
+            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset",
         )
     except AssertionError:
         pass
@@ -334,8 +365,8 @@ def main(args):
         register_coco_instances(
             "coco_trash_test",
             {},
-            "/data/ephemeral/level2-objectdetection-cv-01/dataset/test.json",
-            "/data/ephemeral/level2-objectdetection-cv-01/dataset",
+            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/test.json",
+            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset",
         )
     except AssertionError:
         pass
@@ -428,7 +459,18 @@ def setup(args):
 
 def invoke_main() -> None:
     parser = default_argument_parser()
-    parser.add_argument('--mixup_alpha', type=float, default=1.0, help='Mixup alpha (lambda value) for mixup augmentation')
+    parser.add_argument(
+        "--mixup_alpha",
+        type=float,
+        default=1.0,
+        help="Mixup alpha (lambda value) for mixup augmentation",
+    )
+    parser.add_argument(
+        "--mixup_ratio",
+        type=float,
+        default=0.5,
+        help="Mixup ratio for mixup augmentation",
+    )
     args = parser.parse_args()
     logger.info("Command Line Args:", args)
     main(args)

@@ -12,5 +12,5 @@ SOLVER:
   STEPS: (8000,12000)
   MAX_ITER: 15000
   GAMMA: 0.005
-  CHECKPOINT_PERIOD: 3000
-OUTPUT_DIR: '/data/ephemeral/level2-objectdetection-cv-01/output'
+  CHECKPOINT_PERIOD: 3000 
+OUTPUT_DIR: '/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/output'

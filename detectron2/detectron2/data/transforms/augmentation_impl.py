@@ -787,7 +787,7 @@ class MixupTransform(Augmentation):
     based on a random lambda value sampled from a beta distribution.
     """
 
-    def __init__(self, mixup_alpha: float = 0.4):
+    def __init__(self, mixup_alpha: float = 1.0):
         """
         Args:
             mixup_alpha (float): parameter of the beta distribution.
@@ -797,14 +797,14 @@ class MixupTransform(Augmentation):
         self._init(locals())
         self.mixup_alpha = mixup_alpha
 
-    def get_transform(self, image1, image2, labels1, labels2):
+    def get_transform(self, image1, labels1, image2, labels2):
         """
         Apply Mixup augmentation to two images and their COCO-style labels.
 
         Args:
             image1 (np.ndarray): The first image to mix.
-            image2 (np.ndarray): The second image to mix.
             labels1 (list[dict]): COCO-style annotations for the first image.
+            image2 (np.ndarray): The second image to mix.
             labels2 (list[dict]): COCO-style annotations for the second image.
 
         Returns:
