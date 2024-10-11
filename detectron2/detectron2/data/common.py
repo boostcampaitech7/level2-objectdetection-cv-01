@@ -13,7 +13,12 @@ from torch.utils.data.sampler import Sampler
 
 from detectron2.utils.serialize import PicklableWrapper
 
-__all__ = ["MapDataset", "DatasetFromList", "AspectRatioGroupedDataset", "ToIterableDataset"]
+__all__ = [
+    "MapDataset",
+    "DatasetFromList",
+    "AspectRatioGroupedDataset",
+    "ToIterableDataset",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +91,7 @@ class MapDataset(data.Dataset):
     Map a function over the elements in a dataset.
     """
 
-    def __init__(self, dataset, map_func):
+    def __init__(self, dataset, map_func, mixup_alpha=None, mixup_ratio=None):
         """
         Args:
             dataset: a dataset where map function is applied. Can be either
@@ -100,14 +105,16 @@ class MapDataset(data.Dataset):
         """
         self._dataset = dataset
         self._map_func = PicklableWrapper(map_func)  # wrap so that a lambda will work
+        self._mixup_alpha = mixup_alpha
+        self._mixup_ratio = mixup_ratio
 
         self._rng = random.Random(42)
         self._fallback_candidates = set(range(len(dataset)))
 
-    def __new__(cls, dataset, map_func):
+    def __new__(cls, dataset, map_func, mixup_alpha=None, mixup_ratio=None):
         is_iterable = isinstance(dataset, data.IterableDataset)
         if is_iterable:
-            return _MapIterableDataset(dataset, map_func)
+            return _MapIterableDataset(dataset, map_func, mixup_alpha, mixup_ratio)
         else:
             return super().__new__(cls)
 
@@ -122,7 +129,15 @@ class MapDataset(data.Dataset):
         cur_idx = int(idx)
 
         while True:
-            data = self._map_func(self._dataset[cur_idx])
+            # test시 mixup 적용 안되게
+            if self._mixup_alpha is None or self._mixup_ratio is None:
+                data = self._map_func(self._dataset[cur_idx])
+            
+            # train시 mixup 적용
+            else:
+                data = self._map_func(
+                    self._dataset[cur_idx], self._mixup_alpha, self._mixup_ratio
+                )
             if data is not None:
                 self._fallback_candidates.add(cur_idx)
                 return data
@@ -172,7 +187,9 @@ class _TorchSerializedList:
         self._addr = np.asarray([len(x) for x in self._lst], dtype=np.int64)
         self._addr = torch.from_numpy(np.cumsum(self._addr))
         self._lst = torch.from_numpy(np.concatenate(self._lst))
-        logger.info("Serialized dataset takes {:.2f} MiB".format(len(self._lst) / 1024**2))
+        logger.info(
+            "Serialized dataset takes {:.2f} MiB".format(len(self._lst) / 1024**2)
+        )
 
     def __len__(self):
         return len(self._addr)
@@ -291,7 +308,9 @@ class ToIterableDataset(data.IterableDataset):
             # will run sampler in every of the N worker. So we should only keep 1/N of the ids on
             # each worker. The assumption is that sampler is cheap to iterate so it's fine to
             # discard ids in workers.
-            sampler = _shard_iterator_dataloader_worker(self.sampler, self.shard_chunk_size)
+            sampler = _shard_iterator_dataloader_worker(
+                self.sampler, self.shard_chunk_size
+            )
         for idx in sampler:
             yield self.dataset[idx]
 

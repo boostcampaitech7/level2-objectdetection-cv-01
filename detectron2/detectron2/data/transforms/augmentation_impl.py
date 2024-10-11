@@ -812,7 +812,7 @@ class MixupTransform(Augmentation):
         """
 
         # Blend the two images
-        lam = np.clip(np.random.beta(self.mixup_alpha, self.mixup_alpha), 0.4, 0.6)
+        lam = np.random.beta(self.mixup_alpha, self.mixup_alpha)
         mixed_image = lam * image1 + (1 - lam) * image2
 
         # Combine the labels from both images

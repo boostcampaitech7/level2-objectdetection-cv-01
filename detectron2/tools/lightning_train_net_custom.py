@@ -249,33 +249,6 @@ class TrainingModule(LightningModule):
         scheduler.step()
 
 
-def load_random_coco_image(coco, base_dir):
-    """
-    COCO에서 랜덤 이미지를 선택하여 해당 이미지와 어노테이션을 반환.
-
-    Args:
-        coco (COCO): COCO 객체.
-        base_dir (str): 이미지가 저장된 기본 디렉토리 경로.
-
-    Returns:
-        random_image (np.ndarray): 랜덤으로 선택된 이미지.
-        random_anns (list[dict]): 랜덤 이미지에 대한 어노테이션 리스트.
-    """
-    coco_ids = coco.getImgIds()
-    random_coco_id = coco_ids[torch.randint(0, len(coco_ids), (1,)).item()]
-    random_image_info = coco.loadImgs(random_coco_id)[0]
-    random_image = detection_utils.read_image(
-        base_dir + random_image_info["file_name"], format="BGR"
-    )
-    random_ann_id = coco.getAnnIds(imgIds=random_coco_id)
-    random_anns = coco.loadAnns(random_ann_id)
-
-    for anns in random_anns:
-        anns["bbox_mode"] = BoxMode.XYXY_ABS
-
-    return random_image, random_anns
-
-
 def apply_mixup(image, annotations, random_image, random_annotations, mixup_alpha):
     """
     Mixup augmentation을 적용.
@@ -296,27 +269,60 @@ def apply_mixup(image, annotations, random_image, random_annotations, mixup_alph
     )
 
 
+class CocoCustomLoader:
+    def __init__(self):
+        self.coco_instance = COCO("../../dataset/train.json")
+        self.coco_ids = self.coco_instance.getImgIds()
+        self.coco_ann_ids = self.coco_instance.getAnnIds()
+
+    def get_random_image(self):
+        random_coco_id = self.coco_ids[
+            torch.randint(0, len(self.coco_ids), (1,)).item()
+        ]
+        random_image_info = self.coco_instance.loadImgs(random_coco_id)[0]
+        random_image = detection_utils.read_image(
+            "../../dataset/" + random_image_info["file_name"], format="BGR"
+        )
+        random_ann_id = self.coco_instance.getAnnIds(imgIds=random_coco_id)
+        random_anns = self.coco_instance.loadAnns(random_ann_id)
+
+        for anns in random_anns:
+            anns["bbox_mode"] = BoxMode.XYXY_ABS
+
+        return random_image, random_anns
+
+
+coco = CocoCustomLoader()
+
+
 ##### Mapper
-def TrainMapper(dataset_dict):
+def TrainMapper(dataset_dict, mixup_alpha, mixup_ratio):
     dataset_dict = copy.deepcopy(dataset_dict)
     image = detection_utils.read_image(
         dataset_dict["file_name"], format="BGR"
     )  # ndarray
 
-    mixup_alpha = 1.0
-    mixup_ratio = 0.4  # 40% 확률로 mixup augmentation
-
     # Mixup 적용 여부 결정
     if mixup_ratio > 0 and torch.rand(1).item() < mixup_ratio:
-        coco = COCO(
-            "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/train.json"
-        )
-        random_image, random_anns = load_random_coco_image(
-            coco, "/home/taeyoung4060ti/바탕화면/level2-objectdetection-cv-01/dataset/"
-        )
+        random_image, random_anns = coco.get_random_image()
         image, dataset_dict["annotations"] = apply_mixup(
             image, dataset_dict["annotations"], random_image, random_anns, mixup_alpha
         )
+
+    # mixup 적용된 이미지 저장해서 확인
+    # import cv2
+
+    # image_copy = image.copy()
+    # annotations = dataset_dict.get("annotations", [])
+    # for ann in annotations:
+    #     bbox = ann["bbox"]
+    #     # COCO 형식의 bbox는 [x, y, width, height]
+    #     x, y, w, h = map(int, bbox)
+
+    #     # 이미지에 사각형 그리기 (BGR 색상, 두께 2)
+    #     cv2.rectangle(image_copy, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    # cv2.imwrite(f"mixup/{dataset_dict['image_id']}.jpg", image_copy)
 
     transform_list = [
         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
@@ -340,7 +346,7 @@ def TrainMapper(dataset_dict):
     return dataset_dict
 
 
-def ValMapper(dataset_dict):
+def ValMapper(dataset_dict, mixup_alpha, mixup_ratio):
 
     dataset_dict = copy.deepcopy(dataset_dict)
     image = detection_utils.read_image(dataset_dict["file_name"], format="BGR")
@@ -365,8 +371,6 @@ class DataModule(LightningDataModule):
         super().__init__()
         self.cfg = DefaultTrainer.auto_scale_workers(cfg, comm.get_world_size())
         self.sampler = None  # TODO?
-        self.mixup_alpha = args.mixup_alpha
-        self.mixup_ratio = args.mixup_ratio
 
     def train_dataloader(self):
         return build_detection_train_loader(
@@ -497,18 +501,6 @@ def setup(args):
 
 def invoke_main() -> None:
     parser = default_argument_parser()
-    parser.add_argument(
-        "--mixup_alpha",
-        type=float,
-        default=1.0,
-        help="Mixup alpha (lambda value) for mixup augmentation",
-    )
-    parser.add_argument(
-        "--mixup_ratio",
-        type=float,
-        default=0.5,
-        help="Mixup ratio for mixup augmentation",
-    )
     args = parser.parse_args()
     logger.info("Command Line Args:", args)
     main(args)
