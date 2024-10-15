@@ -631,6 +631,8 @@ _C.TEST.PRECISE_BN.NUM_ITER = 200
 # ---------------------------------------------------------------------------- #
 # Directory where output files are written
 _C.OUTPUT_DIR = "./output"
+_C.BASE_DIR = "./base/"
+_C.FOLD_DIR = './fold/'
 # Set seed to negative to fully randomize everything.
 # Set seed to positive to use a fixed seed. Note that a fixed seed increases
 # reproducibility but does not guarantee fully deterministic behavior.

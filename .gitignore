@@ -3,6 +3,12 @@ output
 instant_test_output
 inference_test_output
 
+# log
+# detectron2/tools/lightning_logs 폴더 전체 제외
+detectron2/tools/lightning_logs/
+
+# detectron2/tools 내부의 wandb 폴더 전체 제외
+detectron2/tools/wandb/
 
 *.png
 *.json

@@ -1,0 +1,43 @@
+VERSION: 2  # 최신 Detectron2 버전과 호환됨을 명시
+
+MODEL:
+  META_ARCHITECTURE: "RTDETR"
+  WEIGHTS: "huggingface/rtdetr"  # Hugging Face 모델 허브에서 사전 학습된 가중치 사용
+  DEVICE: "cuda"  # GPU 사용 (필요에 따라 "cpu"로 변경 가능)
+  BACKBONE:
+    NAME: "build_resnet_backbone"  # 백본 네트워크 설정
+    DEPTH: 50  # ResNet-50 사용
+  RTDETR:
+    NUM_CLASSES: 10  # 모델에서 예측할 클래스 수 (데이터셋에 맞춰 조정)
+    NUM_QUERIES: 300  # 학습 중 사용할 query의 수
+    DICE_LOSS_COEFF: 1.0  # Dice 손실 계수
+    CE_LOSS_COEFF: 1.0  # Cross-entropy 손실 계수
+    TRANSFORMER:
+      NHEADS: 8  # 트랜스포머의 multi-head attention에서 사용할 head 수
+      DIM_FEEDFORWARD: 2048  # 트랜스포머 feedforward 네트워크의 차원
+      DROPOUT: 0.1  # 드롭아웃 비율
+      ENC_LAYERS: 6  # 트랜스포머 인코더 레이어 수
+      DEC_LAYERS: 6  # 트랜스포머 디코더 레이어 수
+
+DATASETS:
+  TRAIN: ("coco_trash_train",)  # 학습 데이터셋
+  TEST: ("coco_trash_test",)  # 테스트 데이터셋
+
+SOLVER:
+  IMS_PER_BATCH: 4  # 배치당 이미지 수
+  BASE_LR: 0.0001  # 학습률 (learning rate)
+  MAX_ITER: 15000  # 최대 학습 반복 수
+  STEPS: (10000, 12000)  # 학습률 감소 단계
+  WARMUP_ITERS: 1000  # 워밍업 반복 수
+  CHECKPOINT_PERIOD: 5000  # 체크포인트 저장 주기
+
+INPUT:
+  MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)  # 학습 시 이미지 최소 크기
+  MAX_SIZE_TRAIN: 1333  # 학습 시 이미지 최대 크기
+  MIN_SIZE_TEST: 800  # 테스트 시 이미지 최소 크기
+  MAX_SIZE_TEST: 1333  # 테스트 시 이미지 최대 크기
+
+TEST:
+  DETECTIONS_PER_IMAGE: 100  # 이미지당 최대 detection 수
+
+OUTPUT_DIR: "./output"
