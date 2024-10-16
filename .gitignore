@@ -30,7 +30,7 @@ wheels/
 model_ts*.txt
 
 # ipython/jupyter notebooks
-*.ipynb
+# *.ipynb
 **/.ipynb_checkpoints/
 
 # Editor temporaries
@@ -217,4 +217,4 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 *.csv
-test
+test.*
