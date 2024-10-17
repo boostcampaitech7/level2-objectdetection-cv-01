@@ -65,7 +65,7 @@ logger = logging.getLogger("detectron2")
 
 
 class TrainingModule(LightningModule):
-    def __init__(self, cfg):
+    def __init__(self, cfg, current_fold):
         super().__init__()
         if not logger.isEnabledFor(logging.INFO):  # setup_logger is not called for d2
             setup_logger()
@@ -75,6 +75,7 @@ class TrainingModule(LightningModule):
 
         self.start_iter = 0
         self.max_iter = cfg.SOLVER.MAX_ITER
+        self.current_fold = current_fold 
 
         self.aug = T.ResizeShortestEdge(
             [cfg.INPUT.MIN_SIZE_TEST, cfg.INPUT.MIN_SIZE_TEST], cfg.INPUT.MAX_SIZE_TEST
@@ -164,7 +165,9 @@ class TrainingModule(LightningModule):
     def training_epoch_end(self, training_step_outputs):
         self.iteration_timer.after_train()
         if comm.is_main_process():
-            self.checkpointer.save("model_final")
+            save_position = os.path.join(base_dir, 'output', start_time)
+            checkpoint_name = f"{save_position}/model_final_Fold{self.current_fold}"
+            self.checkpointer.save(checkpoint_name)
         for writer in self.writers:
             writer.write()
             writer.close()
@@ -184,7 +187,6 @@ class TrainingModule(LightningModule):
     def _reset_dataset_evaluators(self):
         self._evaluators = []
         for dataset_name in self.cfg.DATASETS.TEST:
-            # print("???????????????????????????????????????????????????",dataset_name)
             evaluator = build_evaluator(self.cfg, dataset_name)
             evaluator.reset()
             self._evaluators.append(evaluator)
@@ -256,6 +258,7 @@ class TrainingModule(LightningModule):
 
             if not outputs:
                 print(f"No instances found in the out for file: {data_file_name}")
+                prediction_results.append([prediction_string, data_file_name])
                 continue
 
             # 예측 결과 추출
@@ -354,7 +357,7 @@ class DataModule(LightningDataModule):
 
 
 def main(args):
-
+    global start_time
     start_time = datetime.datetime.now().strftime("%m%d_%H%M%S")
     wandb.init(project='trash object detection',entity='tayoung1005-aitech',config=args,reinit=True)
 
@@ -369,11 +372,12 @@ def main(args):
         train(cfg, args, fold=-1)
 
     else:
+        global base_dir
         base_dir = '/home/minipin/cv-01/level2-objectdetection-cv-01/'
         checkpoint_dir = os.path.join(base_dir, 'output', start_time)
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        num_fold, random_state = 5, 333
+        num_fold, random_state = 5, 7
 
         for fold in range(1,num_fold+1):
             train_json_path = base_dir + f'data/{num_fold}splits_{random_state}/fold{fold}-train.json'
@@ -435,18 +439,18 @@ def train(cfg, args, fold):
 
 
     checkpoint_dir = os.path.join(base_dir, 'output', start_time)
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=checkpoint_dir,
-        monitor="mAP",
-        filename=f"best_model-fold{fold}-{{epoch:02d}}-mAP{{mAP:.2f}}",
-        save_top_k=1,
-        mode="max",
-        save_weights_only=True
-    )
+    # checkpoint_callback = ModelCheckpoint(
+    #     dirpath=checkpoint_dir,
+    #     monitor="mAP",
+    #     filename=f"best_model-fold{fold}-{{epoch:02d}}-mAP{{mAP:.2f}}",
+    #     save_top_k=1,
+    #     mode="max",
+    #     save_weights_only=True
+    # )
     last_checkpoint = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")
 
 
-    module = TrainingModule(cfg)
+    module = TrainingModule(cfg, current_fold = fold)
     
     if args.resume:
         trainer_params["resume_from_checkpoint"] = last_checkpoint
@@ -454,14 +458,15 @@ def train(cfg, args, fold):
     
     
 
-    trainer = pl.Trainer(**trainer_params, callbacks=checkpoint_callback)
+    # trainer = pl.Trainer(**trainer_params, callbacks=checkpoint_callback)
+    trainer = pl.Trainer(**trainer_params)
     logger.info(f"start to train with {args.num_machines} nodes and {args.num_gpus} GPUs")
 
     
     data_module = DataModule(cfg)
 
     if args.eval_only:
-        eval_dir = os.path.join(cfg.OUTPUT_DIR, 'test1_5split_1999randomstate')
+        eval_dir = os.path.join(cfg.OUTPUT_DIR, 'test3_5split_333randomstate')
         checkpoints = [os.path.join(eval_dir, ckpt) for ckpt in os.listdir(eval_dir) if ckpt.endswith(".pth")]
         
         # Iterate through checkpoints and make predictions

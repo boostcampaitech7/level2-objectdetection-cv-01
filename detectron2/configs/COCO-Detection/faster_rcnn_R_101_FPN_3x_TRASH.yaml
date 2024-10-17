@@ -9,12 +9,12 @@ MODEL:
     NUM_CLASSES: 10
     SCORE_THRESH_TEST: 0.3
 SOLVER:
-  STEPS: (16000,24000)
+  STEPS: (3000,4000)
   MAX_ITER: 6000
   GAMMA: 0.005
-  CHECKPOINT_PERIOD: 2000
+  CHECKPOINT_PERIOD: 1000
 BASE_DIR: '/home/minipin/cv-01/level2-objectdetection-cv-01/'
 FOLD_DIR: 
 OUTPUT_DIR: '/home/minipin/cv-01/level2-objectdetection-cv-01/output'
 TEST:
-  EVAL_PERIOD: 2000
+  EVAL_PERIOD: 1000

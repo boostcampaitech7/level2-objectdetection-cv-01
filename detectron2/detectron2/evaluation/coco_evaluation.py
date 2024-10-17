@@ -586,6 +586,20 @@ def _evaluate_predictions_on_coco(
         # We remove the bbox field to let mask AP use mask area.
         for c in coco_results:
             c.pop("bbox", None)
+    
+    print("coco_result:", coco_results)
+    print()
+    print("Ground truth image IDs:", coco_gt.getImgIds())
+    print()
+    img_ids_gt = set(coco_gt.getImgIds())
+    img_ids_pred = set([res['image_id'] for res in coco_results])
+
+    # 일치하지 않는 이미지 ID를 출력
+    missing_in_gt = img_ids_pred - img_ids_gt
+    if missing_in_gt:
+        print("Missing image IDs in ground truth:", missing_in_gt)
+    else:
+        print("All image IDs match.")
 
     coco_dt = coco_gt.loadRes(coco_results)
     coco_eval = cocoeval_fn(coco_gt, coco_dt, iou_type)
