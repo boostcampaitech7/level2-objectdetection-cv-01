@@ -78,7 +78,7 @@ class CascadeROIHeads(StandardROIHeads):
         )
         self.proposal_matchers = proposal_matchers
 
-        self.use_contrasive_loss = True
+        self.use_contrasive_loss = True # TODO config 등록 
         if self.use_contrasive_loss:
             self.contrasive_feature_mem = torch.zeros(0).cuda()
             self.contrasive_label_mem = torch.zeros(0).cuda()
@@ -200,9 +200,14 @@ class CascadeROIHeads(StandardROIHeads):
         
 
         contrasive_loss = None 
-        if self.use_contrasive_loss and self.training:
+        ## proposal 사용 버전
+        if self.use_contrasive_loss and self.training and False:
             
+            # 현재 proposal의 box feature를 사용 
             box_features = self.box_pooler(features, [x.proposal_boxes for x in proposals])
+            #TODO?
+            # box_features = self.box_pooler(features, [x.gt_boxes for x in targets])
+
             scores, proposal_deltas = predictions
             proposal_boxes = cat([p.proposal_boxes.tensor for p in proposals], dim=0) 
             
@@ -214,7 +219,7 @@ class CascadeROIHeads(StandardROIHeads):
             dim=0,
             )
 
-            # fg_inds = nonzero_tuple((gt_classes >= 0) & (gt_classes < 10))[0] #TODO hard coding 
+            
             # fg_inds = nonzero_tuple((gt_classes == 0))[0] #TODO hard coding fg...? only class 0 
             
             fg_inds = nonzero_tuple((gt_classes >= 0) & (gt_classes < 10))[0]   
@@ -262,6 +267,36 @@ class CascadeROIHeads(StandardROIHeads):
                     contrasive_loss = contrasive_loss + 0.5*torch.clip((neg_cos_sim)/2,0,1).mean()
 
 
+        # ground truth 사용 버전 
+        if self.use_contrasive_loss and self.training:
+            
+            fg_box_features = self.box_pooler(features, [x.gt_boxes for x in targets])
+            fg_labels = torch.cat([x.gt_classes for x in targets])
+
+            if fg_box_features.shape[0] !=0:
+                fg_box_features = fg_box_features.mean(dim=[2,3])
+                normalized_box_feature = self.l2_norm(fg_box_features)
+
+                with torch.no_grad():
+                    self.update_mem(normalized_box_feature,fg_labels)
+
+                    mask = (fg_labels.unsqueeze(1) == self.contrasive_label_mem.unsqueeze(0)).float()
+                    # mask = mask - torch.eye(mask.size(0)).to(mask.device)
+
+
+                if self.contrasive_feature_mem.shape[0] > 0:
+                    pair_cos_sim = torch.einsum('bi,ki->bk', normalized_box_feature, self.contrasive_feature_mem)
+                    
+                    # print(pair_cos_sim.shape,"paricossim")
+                    # print(mask.shape,"mask")
+                    
+                    pair_cos_sim = mask*pair_cos_sim
+                    neg_cos_sim = (1-mask)*pair_cos_sim
+                    contrasive_loss = 0.5*torch.clip((1 - pair_cos_sim)/2,0,1).mean()
+                    contrasive_loss = contrasive_loss + 0.5*torch.clip((neg_cos_sim)/2,0,1).mean()
+
+
+        
         if self.training:
             losses = {}
             # print("???")
