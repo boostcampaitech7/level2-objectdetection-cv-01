@@ -1,6 +1,6 @@
 # dataset settings
 dataset_type = 'CocoDataset'
-data_root = '/data/ephemeral/home/dataset'
+data_root = '/data/ephemeral/home/level2-objectdetection-cv-01/dataset'
 
 # Example to use different file client
 # Method 1: simply set the data root and let the file I/O module
@@ -45,28 +45,28 @@ test_pipeline = [
 ]
 train_dataloader = dict(
     batch_size=16,
-    num_workers=2,
+    num_workers=4,
     persistent_workers=True,
     sampler=dict(type='DefaultSampler', shuffle=True),
     batch_sampler=dict(type='AspectRatioBatchSampler'),
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='train_80.json',
+        ann_file='train.json',
         data_prefix=dict(img='./'),
         filter_cfg=dict(filter_empty_gt=True, min_size=32),
         pipeline=train_pipeline,
         backend_args=backend_args))
 val_dataloader = dict(
     batch_size=16,
-    num_workers=2,
+    num_workers=4,
     persistent_workers=True,
     drop_last=False,
     sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(
         type=dataset_type,
         data_root=data_root,
-        ann_file='val_20.json',
+        ann_file='train.json',
         data_prefix=dict(img='./'),
         test_mode=True,
         pipeline=test_pipeline,
@@ -75,7 +75,7 @@ test_dataloader = val_dataloader
 
 val_evaluator = dict(
     type='CocoMetric',
-    ann_file=data_root + '/val_20.json',
+    ann_file=data_root + '/train.json',
     metric='bbox',
     format_only=False,
     backend_args=backend_args)
@@ -84,8 +84,8 @@ test_evaluator = val_evaluator
 # inference on test dataset and
 # format the output results for submission.
 test_dataloader = dict(
-    batch_size=8,
-    num_workers=2,
+    batch_size=16,
+    num_workers=4,
 
     persistent_workers=True,
     drop_last=False,
