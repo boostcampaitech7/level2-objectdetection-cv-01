@@ -27,7 +27,15 @@ from detectron2.engine import (
 )
 from detectron2.engine.defaults import create_ddp_model
 from detectron2.evaluation import inference_on_dataset, print_csv_format
+from detectron2.data.datasets import register_coco_instances
+from detectron2.data import MetadataCatalog
+
 from detectron2.utils import comm
+
+import copy
+# from detectron2.data import detection_utils,build_detection_train_loader
+
+
 
 logger = logging.getLogger("detectron2")
 
@@ -71,6 +79,10 @@ def do_train(args, cfg):
     optim = instantiate(cfg.optimizer)
 
     train_loader = instantiate(cfg.dataloader.train)
+    #######
+
+    # train_loader = build_detection_train_loader(cfg, mapper=TrainMapper)
+
 
     model = create_ddp_model(model, **cfg.train.ddp)
     trainer = (AMPTrainer if cfg.train.amp.enabled else SimpleTrainer)(model, train_loader, optim)
@@ -110,8 +122,29 @@ def do_train(args, cfg):
     trainer.train(start_iter, cfg.train.max_iter)
 
 
+    
 def main(args):
+
+    try:
+        register_coco_instances('coco_trash_train', {}, '/data/ephemeral/home/dataset/train_80.json', '/data/ephemeral/home/dataset')
+    except AssertionError:
+        pass
+    try:
+        register_coco_instances('coco_trash_test', {}, '/data/ephemeral/home/dataset/val_20.json', '/data/ephemeral/home/dataset')
+        # register_coco_instances('coco_trash_test', {}, '/data/ephemeral/home/dataset/val_20.json', '/data/ephemeral/home/dataset')
+
+    except AssertionError:
+        pass
+
+    MetadataCatalog.get('coco_trash_train').thing_classes = ["General trash", "Paper", "Paper pack", "Metal", 
+                                                            "Glass", "Plastic", "Styrofoam", "Plastic bag", "Battery", "Clothing"]
+
+
+
     cfg = LazyConfig.load(args.config_file)
+
+    # cfg.dataloader.train.mapper = TrainMapper
+
     cfg = LazyConfig.apply_overrides(cfg, args.opts)
     default_setup(cfg, args)
 
