@@ -1,4 +1,4 @@
-# BoostCamp AI Tech 7th CV-01 Project
+# BoostCamp AI Tech 7th CV-01 Object Detection Project
 
 ## Team Members
 | <img src="https://github.com/user-attachments/assets/7d2414bd-dadf-48f0-a315-a5921d3d52fa" width="100"/> | <img src="https://github.com/user-attachments/assets/7f9949f9-703a-4e42-bd1b-5a5683ed24d2" width="100"/> | <img src="https://github.com/user-attachments/assets/b94ec0ce-873d-4fe0-b9d3-7fe6a3b37163" width="100"/> | <img src="https://github.com/user-attachments/assets/fd845c5d-08a1-4d92-950e-c54d3812662d" width="100"/> | <img src="https://github.com/user-attachments/assets/be384c7a-b7ea-4ce0-b1a1-7da4e8a9b6e5" width="100"/> | <img src="https://github.com/user-attachments/assets/ac1ddf74-ccdb-4170-869e-74177ca00633" width="100"/> |
